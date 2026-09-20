@@ -1,0 +1,42 @@
+{
+  "updated_at": "2026-09-18T10:02:52.685055",
+  "uptime_seconds": 15.0,
+  "tasks": {
+    "pending": 0,
+    "running": 0,
+    "completed": 50,
+    "total": 50,
+    "completion_rate": 100.0,
+    "total_solutions": 9724
+  },
+  "workers_count": 3,
+  "workers": [
+    {
+      "worker_id": "PC01",
+      "address": "127.0.0.1",
+      "status": "WAITING",
+      "task_id": null,
+      "task_range": "待機中",
+      "last_heartbeat_ago": 1.2,
+      "completed_count": 22
+    },
+    {
+      "worker_id": "PC02",
+      "address": "127.0.0.1",
+      "status": "WAITING",
+      "task_id": null,
+      "task_range": "待機中",
+      "last_heartbeat_ago": 1.1,
+      "completed_count": 16
+    },
+    {
+      "worker_id": "PC03",
+      "address": "127.0.0.1",
+      "status": "WAITING",
+      "task_id": null,
+      "task_range": "待機中",
+      "last_heartbeat_ago": 1.1,
+      "completed_count": 12
+    }
+  ]
+}

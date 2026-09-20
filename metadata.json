@@ -1,0 +1,6 @@
+{
+  "name": "LAN 分散計算システム (φ⁻¹(n) Endo Method)",
+  "description": "親サーバー1台・最大22台のワーカーPCによるLAN並列分散計算システム。Endo_methodを用いてオイラーのトーシェント関数逆像 φ⁻¹(n) を高速分散算出。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
