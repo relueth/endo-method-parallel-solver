@@ -136,7 +136,7 @@ class TaskManager:
             conn.close()
 
     def get_max_range(self) -> tuple:
-        """現在のタスクの最大 task_id と最大 end を取得"""
+        """現在のタスクの最大 task_id と最大 end を取得 (tasks.db が空なら results/ の既存結果も自動参照)"""
         with self.lock:
             conn = self.get_connection()
             cur = conn.cursor()
@@ -145,6 +145,26 @@ class TaskManager:
             conn.close()
             max_id = row[0] if (row and row[0] is not None) else 0
             max_end = row[1] if (row and row[1] is not None) else 0
+
+            # tasks.db が空または初期化されている場合、results/ ディレクトリ内の既存 json も自動探査
+            if max_end == 0 and RESULTS_DIR.exists():
+                try:
+                    for p in RESULTS_DIR.glob("task_*.json"):
+                        try:
+                            with open(p, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                                tid = data.get("task_id", 0)
+                                if tid > max_id:
+                                    max_id = tid
+                                res = data.get("result", {})
+                                end_val = res.get("end", 0)
+                                if end_val > max_end:
+                                    max_end = end_val
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"results ディレクトリの確認中にエラー: {e}")
+
             return (max_id, max_end)
 
     def append_tasks(self, start_range: int, end_range: int, chunk_size: int) -> int:
