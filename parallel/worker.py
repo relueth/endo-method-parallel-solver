@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 # Endo_method の import (第19項 & ユーザー要求)
-from Endo_method import phi_inverse, phi_inverse_count
+from Endo_method import phi_inverse, phi_inverse_count, calculate_range
 
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
@@ -47,10 +47,10 @@ logger.addHandler(stream_handler)
 # ==========================================
 # 数値計算プログラム (第19項 分離原則)
 # ==========================================
-def calculate(start: int, end: int) -> Dict[str, Any]:
+def calculate(start: int, end: int, max_workers: Optional[int] = None) -> Dict[str, Any]:
     """
     数値計算処理: オイラー関数の方程式 φ(x) = n の解の個数および解集合を求める。
-    Endo_method.phi_inverse(n) を利用して [start, end] の全 n について解を求める。
+    Endo_method.calculate_range を使用して、各ワーカーPCの全CPUコアで並列計算する。
 
     返り値の形式:
     {
@@ -72,11 +72,10 @@ def calculate(start: int, end: int) -> Dict[str, Any]:
 
     total_n = end - start + 1
 
-    for i, n in enumerate(range(start, end + 1)):
-        # Endo_method を使用して φ^(-1)(n) を計算
-        solutions_set = phi_inverse(n)
-        sol_count = len(solutions_set)
+    # CPUマルチプロセス並列計算を実行
+    range_results = calculate_range(start, end, max_workers=max_workers)
 
+    for n, solutions_set, sol_count, _ in range_results:
         total_solutions += sol_count
         if sol_count > 0:
             solvable_count += 1
