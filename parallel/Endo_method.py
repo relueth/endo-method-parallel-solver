@@ -1,6 +1,20 @@
-import sympy as sy
-import time
 import os
+import sys
+import time
+
+# sympy が未インストールの場合は自動インストール
+try:
+    import sympy as sy
+except ImportError:
+    try:
+        from ensure_deps import ensure_package
+        ensure_package("sympy", "sympy")
+        import sympy as sy
+    except Exception:
+        import subprocess
+        subprocess.run([sys.executable, "-m", "pip", "install", "sympy"], check=True)
+        import sympy as sy
+
 
 from functools import lru_cache
 from itertools import combinations

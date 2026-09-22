@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { TaskItem } from "../types";
-import { ListFilter, PlusCircle, RefreshCw, CheckCircle, Clock, PlayCircle, Search } from "lucide-react";
+import { ListFilter, PlusCircle, RefreshCw, CheckCircle, Clock, PlayCircle, Search, Database, Download } from "lucide-react";
 
 interface TaskQueueManagerProps {
   onGenerateTasks: (start: number, end: number, chunkSize: number) => Promise<void>;
@@ -20,6 +20,8 @@ export const TaskQueueManager: React.FC<TaskQueueManagerProps> = ({
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isBackingUp, setIsBackingUp] = useState<boolean>(false);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
 
   const fetchTasks = async () => {
     setIsLoading(true);
@@ -108,8 +110,43 @@ export const TaskQueueManager: React.FC<TaskQueueManagerProps> = ({
             <PlusCircle className="w-3.5 h-3.5 mr-1" />
             {isGenerating ? "生成中..." : "タスク再生成"}
           </button>
+
+          <button
+            type="button"
+            disabled={isBackingUp}
+            onClick={async () => {
+              setIsBackingUp(true);
+              setBackupMessage(null);
+              try {
+                const res = await fetch("/api/cluster/database/backup", { method: "POST" });
+                const data = await res.json();
+                if (data.status === "success") {
+                  setBackupMessage(`バックアップ完了: ${data.filename}`);
+                  setTimeout(() => setBackupMessage(null), 4000);
+                } else {
+                  setBackupMessage(`エラー: ${data.error || "失敗しました"}`);
+                }
+              } catch (e: any) {
+                setBackupMessage(`エラー: ${e.message}`);
+              } finally {
+                setIsBackingUp(false);
+              }
+            }}
+            className="inline-flex items-center px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50"
+            title="tasks.db を data/backups/ に安全にバックアップ保存"
+          >
+            <Database className="w-3.5 h-3.5 mr-1" />
+            {isBackingUp ? "保存中..." : "DBバックアップ"}
+          </button>
         </form>
       </div>
+
+      {backupMessage && (
+        <div className="mb-3 px-3 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg flex items-center justify-between">
+          <span className="font-mono">{backupMessage}</span>
+          <span className="text-[11px] text-emerald-600">data/backups/ に保存済み</span>
+        </div>
+      )}
 
       {/* Filter Tabs & Count */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3 text-xs">

@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import socket
 import sqlite3
 import sys
@@ -32,11 +33,13 @@ from typing import Dict, Optional, Any
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 RESULTS_DIR = DATA_DIR / "results"
+BACKUP_DIR = DATA_DIR / "backups"
 LOGS_DIR = BASE_DIR / "logs"
 CONFIG_FILE = BASE_DIR / "config.json"
 
 DATA_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
+BACKUP_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 
 # ログ設定
@@ -359,6 +362,32 @@ class TaskManager:
             conn.close()
             counts["TOTAL_SOLUTIONS"] = sum_res if sum_res else 0
             return counts
+
+    def backup_database(self, custom_name: Optional[str] = None) -> Path:
+        """tasks.db を安全にバックアップフォルダへコピー保存する (SQLite の backup API を使用)"""
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if custom_name:
+            # 安全なファイル名にサニタイズ
+            safe_name = "".join(c for c in custom_name if c.isalnum() or c in ("-", "_", "."))
+            filename = f"tasks_backup_{now_str}_{safe_name}.db"
+        else:
+            filename = f"tasks_backup_{now_str}.db"
+
+        backup_file = BACKUP_DIR / filename
+
+        with self.lock:
+            # 稼働中のロック競合を避けるため SQLite 標準の backup API を使用
+            src_conn = self.get_connection()
+            dest_conn = sqlite3.connect(str(backup_file))
+            try:
+                src_conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
+                src_conn.close()
+
+        logger.info(f"tasks.db のバックアップを保存しました: {backup_file.name}")
+        return backup_file
 
 
 class DistributedServer:

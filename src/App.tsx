@@ -5,6 +5,7 @@ import { ClusterOverview } from "./components/ClusterOverview";
 import { WorkerFleetGrid } from "./components/WorkerFleetGrid";
 import { TaskQueueManager } from "./components/TaskQueueManager";
 import { EndoExplorer } from "./components/EndoExplorer";
+import { BenchmarkChart } from "./components/BenchmarkChart";
 import { LogsViewer } from "./components/LogsViewer";
 import { CodeInspector } from "./components/CodeInspector";
 
@@ -29,7 +30,7 @@ export default function App() {
   });
 
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"cluster" | "tasks" | "endo" | "logs" | "code">("cluster");
+  const [activeTab, setActiveTab] = useState<"cluster" | "tasks" | "benchmark" | "endo" | "logs" | "code">("cluster");
 
   const fetchStatus = async () => {
     try {
@@ -182,6 +183,16 @@ export default function App() {
             タスク管理 (SQLite DB)
           </button>
           <button
+            onClick={() => setActiveTab("benchmark")}
+            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === "benchmark"
+                ? "border-indigo-600 text-indigo-700 font-bold"
+                : "border-transparent text-slate-500 hover:text-slate-900"
+            }`}
+          >
+            📊 処理時間グラフ分析
+          </button>
+          <button
             onClick={() => setActiveTab("endo")}
             className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
               activeTab === "endo"
@@ -248,6 +259,13 @@ export default function App() {
               onGenerateTasks={handleGenerateTasks}
               isGenerating={isActionLoading}
             />
+          </div>
+        )}
+
+        {/* Tab 2.5: Benchmark Chart */}
+        {activeTab === "benchmark" && (
+          <div className="space-y-6">
+            <BenchmarkChart />
           </div>
         )}
 

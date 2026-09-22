@@ -21,7 +21,7 @@ from tkinter import ttk, messagebox, scrolledtext
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from server import DistributedServer, TaskManager, DATA_DIR, RESULTS_DIR, LOGS_DIR, CONFIG_FILE
+from server import DistributedServer, TaskManager, DATA_DIR, RESULTS_DIR, BACKUP_DIR, LOGS_DIR, CONFIG_FILE
 
 # Windows 高DPI対応
 try:
@@ -296,8 +296,17 @@ class ServerGUI:
         btn_clear_log = ttk.Button(log_btn_bar, text="ログ消去", command=self._clear_log)
         btn_clear_log.pack(side=tk.LEFT)
 
+        btn_backup = ttk.Button(log_btn_bar, text="💾 tasks.dbをバックアップ", command=self._backup_database)
+        btn_backup.pack(side=tk.LEFT, padx=(8, 0))
+
+        btn_open_backup = ttk.Button(log_btn_bar, text="📂 バックアップ先を開く", command=self._open_backups_dir)
+        btn_open_backup.pack(side=tk.LEFT, padx=(4, 0))
+
         btn_open_results = ttk.Button(log_btn_bar, text="📁 結果保存フォルダを開く", command=self._open_results_dir)
         btn_open_results.pack(side=tk.RIGHT)
+
+        btn_plot_graph = ttk.Button(log_btn_bar, text="📊 処理時間グラフ作成", command=self._plot_benchmark)
+        btn_plot_graph.pack(side=tk.RIGHT, padx=(0, 6))
 
     def _setup_logging(self):
         """Python logging を ScrolledText に接続"""
@@ -499,6 +508,45 @@ class ServerGUI:
         self.log_text.configure(state='normal')
         self.log_text.delete('1.0', tk.END)
         self.log_text.configure(state='disabled')
+
+    def _backup_database(self):
+        """tasks.db を安全にバックアップ保存する"""
+        try:
+            db_path = DATA_DIR / "tasks.db"
+            if not db_path.exists():
+                messagebox.showwarning("警告", "tasks.db がまだ作成されていません。")
+                return
+
+            task_mgr = self.server.task_mgr if (self.server and self.server.task_mgr) else TaskManager(db_path)
+            backup_path = task_mgr.backup_database()
+            messagebox.showinfo(
+                "バックアップ完了",
+                f"tasks.db のバックアップを保存しました！\n\nファイル名:\n{backup_path.name}\n\n保存先:\n{backup_path.parent}"
+            )
+        except Exception as e:
+            messagebox.showerror("バックアップ失敗", f"バックアップ中にエラーが発生しました:\n{e}")
+
+    def _open_backups_dir(self):
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(str(BACKUP_DIR))
+        elif sys.platform == "darwin":
+            os.system(f'open "{BACKUP_DIR}"')
+        else:
+            os.system(f'xdg-open "{BACKUP_DIR}"')
+
+    def _plot_benchmark(self):
+        """results/ フォルダのデータから処理時間グラフを作成"""
+        try:
+            plot_script = BASE_DIR / "plot_benchmark.py"
+            if not plot_script.exists():
+                messagebox.showerror("エラー", "plot_benchmark.py が見つかりません。")
+                return
+
+            import subprocess
+            subprocess.Popen([sys.executable, str(plot_script)], cwd=str(BASE_DIR))
+        except Exception as e:
+            messagebox.showerror("グラフ生成失敗", f"グラフ起動中にエラーが発生しました:\n{e}")
 
     def _open_results_dir(self):
         RESULTS_DIR.mkdir(exist_ok=True)

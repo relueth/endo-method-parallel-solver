@@ -14,6 +14,7 @@ const PARALLEL_DIR = path.join(BASE_DIR, "parallel");
 const DATA_DIR = path.join(PARALLEL_DIR, "data");
 const LOGS_DIR = path.join(PARALLEL_DIR, "logs");
 const RESULTS_DIR = path.join(DATA_DIR, "results");
+const BACKUPS_DIR = path.join(DATA_DIR, "backups");
 
 // 追跡中の子プロセス管理
 let serverProcess: ChildProcess | null = null;
@@ -22,6 +23,7 @@ const workerProcesses: Map<string, ChildProcess> = new Map();
 // ディレクトリ確保
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(RESULTS_DIR)) fs.mkdirSync(RESULTS_DIR, { recursive: true });
+if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // Python実行ヘルパー
@@ -316,6 +318,68 @@ else:
   }
 });
 
+// tasks.db のバックアップ作成
+app.post("/api/cluster/database/backup", (req, res) => {
+  try {
+    const dbPath = path.join(DATA_DIR, "tasks.db");
+    if (!fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: "tasks.db が存在しません。" });
+    }
+
+    const pyCode = `
+import sqlite3, datetime
+from pathlib import Path
+db_path = Path('data/tasks.db')
+backup_dir = Path('data/backups')
+backup_dir.mkdir(parents=True, exist_ok=True)
+now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+target = backup_dir / f"tasks_backup_{now_str}.db"
+
+src = sqlite3.connect(db_path)
+dst = sqlite3.connect(target)
+try:
+    src.backup(dst)
+    print(target.name)
+finally:
+    dst.close()
+    src.close()
+`;
+    const backupFileName = runPythonCode(pyCode);
+    res.json({
+      status: "success",
+      filename: backupFileName,
+      path: `data/backups/${backupFileName}`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// バックアップ一覧取得
+app.get("/api/cluster/database/backups", (req, res) => {
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      return res.json([]);
+    }
+    const files = fs.readdirSync(BACKUPS_DIR)
+      .filter(f => f.endsWith(".db"))
+      .map(name => {
+        const fullPath = path.join(BACKUPS_DIR, name);
+        const stats = fs.statSync(fullPath);
+        return {
+          filename: name,
+          size_bytes: stats.size,
+          created_at: stats.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    res.json(files);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // タスク一覧 (ページネーション)
 app.get("/api/cluster/tasks/list", (req, res) => {
   try {
@@ -348,6 +412,76 @@ else:
 `;
     const out = runPythonCode(pyCode);
     res.json(JSON.parse(out));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ベンチマーク・処理時間グラフ用データエンドポイント (resultsフォルダから全件集計)
+app.get("/api/cluster/results/benchmark", (req, res) => {
+  try {
+    if (!fs.existsSync(RESULTS_DIR)) {
+      return res.json({ points: [], summary: { total_tasks: 0, avg_duration: 0, total_solutions: 0 } });
+    }
+
+    const files = fs.readdirSync(RESULTS_DIR).filter(f => f.endsWith(".json"));
+    const points: Array<{
+      task_id: number;
+      start: number;
+      end: number;
+      label: string;
+      range_display: string;
+      duration_sec: number;
+      total_solutions: number;
+      solvable_count: number;
+      worker_id: string;
+      completed_at: string;
+    }> = [];
+
+    for (const file of files) {
+      try {
+        const fullPath = path.join(RESULTS_DIR, file);
+        const data = JSON.parse(fs.readFileSync(fullPath, "utf-8"));
+        const tid = data.task_id || 0;
+        const resObj = data.result || {};
+        const start = resObj.start || 0;
+        const end = resObj.end || 0;
+        const duration = typeof data.duration === "number" ? data.duration : (resObj.duration_sec || 0);
+
+        points.push({
+          task_id: tid,
+          start,
+          end,
+          label: `${end}`, // 横軸: 分割の終端 (例: 100, 200, 300, ...)
+          range_display: `${start}〜${end}`,
+          duration_sec: Math.round(duration * 1000) / 1000,
+          total_solutions: resObj.total_solutions || 0,
+          solvable_count: resObj.solvable_count || 0,
+          worker_id: data.worker_id || "-",
+          completed_at: data.completed_at || "",
+        });
+      } catch (e) {
+        // スキップ
+      }
+    }
+
+    // 横軸 (startまたはend) で昇順ソート
+    points.sort((a, b) => a.end - b.end);
+
+    const totalDuration = points.reduce((acc, p) => acc + p.duration_sec, 0);
+    const totalSolutions = points.reduce((acc, p) => acc + p.total_solutions, 0);
+    const avgDuration = points.length > 0 ? Math.round((totalDuration / points.length) * 1000) / 1000 : 0;
+
+    res.json({
+      points,
+      summary: {
+        total_tasks: points.length,
+        avg_duration: avgDuration,
+        total_solutions: totalSolutions,
+        min_end: points.length > 0 ? points[0].end : 0,
+        max_end: points.length > 0 ? points[points.length - 1].end : 0,
+      }
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
