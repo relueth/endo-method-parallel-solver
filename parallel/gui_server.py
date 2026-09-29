@@ -253,12 +253,57 @@ class ServerGUI:
         self.lbl_stat_solutions = ttk.Label(badge_box, text="発見解数: 0", foreground="#4338ca", font=("Segoe UI", 9, "bold"))
         self.lbl_stat_solutions.pack(side=tk.RIGHT)
 
-        # 3. 接続中ワーカー一覧 (Treeview)
-        worker_frame = ttk.LabelFrame(main_frame, text=" 接続中のワーカーPC (最大22台) ", padding=8)
+        # 3. 接続中ワーカー一覧 (Treeview & 操作コントロール)
+        worker_frame = ttk.LabelFrame(main_frame, text=" 接続中のワーカーPC (最大22台) & 計算開始指示 ", padding=8)
         worker_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
+        # ワーカー操作コントロールバー
+        w_ctl_bar = ttk.Frame(worker_frame)
+        w_ctl_bar.pack(fill=tk.X, pady=(0, 6))
+
+        # 1. 一括操作ボタン
+        self.btn_start_all_workers = tk.Button(
+            w_ctl_bar, text="▶ 全ワーカー一括開始", font=("Segoe UI", 10, "bold"),
+            bg="#16a34a", fg="white", activebackground="#15803d", activeforeground="white",
+            padx=12, pady=4, cursor="hand2", relief="raised", command=self._start_all_workers_cmd
+        )
+        self.btn_start_all_workers.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_pause_all_workers = tk.Button(
+            w_ctl_bar, text="⏸ 全ワーカー一時停止", font=("Segoe UI", 9),
+            bg="#f1f5f9", fg="#334155", activebackground="#e2e8f0",
+            padx=10, pady=4, cursor="hand2", relief="groove", command=self._pause_all_workers_cmd
+        )
+        self.btn_pause_all_workers.pack(side=tk.LEFT, padx=(0, 14))
+
+        # 2. 個別指定操作系
+        sep = ttk.Separator(w_ctl_bar, orient=tk.VERTICAL)
+        sep.pack(side=tk.LEFT, fill=tk.Y, padx=6)
+
+        ttk.Label(w_ctl_bar, text="指定ワーカー:").pack(side=tk.LEFT, padx=(4, 4))
+        self.cbo_worker_target = ttk.Combobox(w_ctl_bar, width=10, state="readonly")
+        self.cbo_worker_target.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_start_selected_worker = tk.Button(
+            w_ctl_bar, text="▶ 指定ワーカーを開始", font=("Segoe UI", 10, "bold"),
+            bg="#0284c7", fg="white", activebackground="#0369a1", activeforeground="white",
+            padx=10, pady=4, cursor="hand2", relief="raised", command=self._start_selected_worker_cmd
+        )
+        self.btn_start_selected_worker.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_pause_selected_worker = tk.Button(
+            w_ctl_bar, text="⏸ 指定ワーカーを一時停止", font=("Segoe UI", 9),
+            bg="#f1f5f9", fg="#334155", activebackground="#e2e8f0",
+            padx=8, pady=4, cursor="hand2", relief="groove", command=self._pause_selected_worker_cmd
+        )
+        self.btn_pause_selected_worker.pack(side=tk.LEFT)
+
+        # テーブルコンテナ
+        tree_container = ttk.Frame(worker_frame)
+        tree_container.pack(fill=tk.BOTH, expand=True)
+
         columns = ("worker_id", "status", "ip", "task_range", "last_hb", "completed")
-        self.tree_workers = ttk.Treeview(worker_frame, columns=columns, show="headings", height=5)
+        self.tree_workers = ttk.Treeview(tree_container, columns=columns, show="headings", height=5)
 
         self.tree_workers.heading("worker_id", text="ワーカーID")
         self.tree_workers.heading("status", text="状態")
@@ -268,17 +313,27 @@ class ServerGUI:
         self.tree_workers.heading("completed", text="完了タスク数")
 
         self.tree_workers.column("worker_id", width=90, anchor=tk.CENTER)
-        self.tree_workers.column("status", width=90, anchor=tk.CENTER)
+        self.tree_workers.column("status", width=130, anchor=tk.CENTER)
         self.tree_workers.column("ip", width=120, anchor=tk.CENTER)
-        self.tree_workers.column("task_range", width=160, anchor=tk.CENTER)
+        self.tree_workers.column("task_range", width=180, anchor=tk.CENTER)
         self.tree_workers.column("last_hb", width=100, anchor=tk.CENTER)
         self.tree_workers.column("completed", width=90, anchor=tk.CENTER)
 
-        tree_scroll = ttk.Scrollbar(worker_frame, orient=tk.VERTICAL, command=self.tree_workers.yview)
+        tree_scroll = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=self.tree_workers.yview)
         self.tree_workers.configure(yscrollcommand=tree_scroll.set)
 
         self.tree_workers.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree_workers.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.tree_workers.bind("<Button-3>", self._show_context_menu)
+
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="▶ このワーカーの計算を開始", command=self._start_selected_worker_cmd)
+        self.context_menu.add_command(label="⏸ このワーカーを一時停止", command=self._pause_selected_worker_cmd)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="▶ 全ワーカーを一括開始", command=self._start_all_workers_cmd)
+        self.context_menu.add_command(label="⏸ 全ワーカーを一括一時停止", command=self._pause_all_workers_cmd)
 
         # 4. リアルタイムログエリア
         log_frame = ttk.LabelFrame(main_frame, text=" サーバーリアルタイム動作ログ ", padding=6)
@@ -478,31 +533,120 @@ class ServerGUI:
             if self.server:
                 now = time.time()
                 workers_data = []
+                active_ids = []
                 with self.server.workers_lock:
                     for w_id, w_info in self.server.workers.items():
                         diff = round(now - w_info.get("last_heartbeat", now), 1)
+                        raw_status = w_info.get("status", "CONNECTED")
+                        if raw_status != "DISCONNECTED":
+                            active_ids.append(w_id)
+
+                        # ユーザーフレンドリーな状態テキスト
+                        if raw_status == "STANDBY":
+                            display_status = "待機中 (指示待ち)"
+                        elif raw_status == "RUNNING":
+                            display_status = "計算実行中"
+                        elif raw_status == "WAITING":
+                            display_status = "待機中 (タスク待ち)"
+                        elif raw_status == "CONNECTED":
+                            display_status = "接続完了"
+                        else:
+                            display_status = "切断"
+
                         task_id = w_info.get("task_id")
-                        trange = f"task_{task_id} ({w_info.get('task_range', '')})" if task_id else "待機中 (WAIT)"
+                        trange = f"task_{task_id} ({w_info.get('task_range', '')})" if task_id else w_info.get('task_range', '待機中')
                         workers_data.append((
                             w_id,
-                            w_info.get("status", "CONNECTED"),
+                            display_status,
                             w_info.get("address", ""),
                             trange,
                             f"{diff}秒前",
                             w_info.get("completed_count", 0)
                         ))
 
+                # Combobox の選択肢をアクティブなワーカーで同期
+                active_sorted = sorted(active_ids)
+                if list(self.cbo_worker_target["values"]) != active_sorted:
+                    current_sel = self.cbo_worker_target.get()
+                    self.cbo_worker_target["values"] = active_sorted
+                    if current_sel in active_sorted:
+                        self.cbo_worker_target.set(current_sel)
+                    elif active_sorted:
+                        self.cbo_worker_target.set(active_sorted[0])
+                    else:
+                        self.cbo_worker_target.set("")
+
+                # 選択中のアイテムIDを記憶
+                selected_ids = [self.tree_workers.item(i)["values"][0] for i in self.tree_workers.selection() if self.tree_workers.item(i).get("values")]
+
                 # Treeview を一度クリアして再描画
                 for item in self.tree_workers.get_children():
                     self.tree_workers.delete(item)
 
                 for row in sorted(workers_data, key=lambda x: x[0]):
-                    self.tree_workers.insert("", tk.END, values=row)
+                    item_id = self.tree_workers.insert("", tk.END, values=row)
+                    if selected_ids and row[0] in selected_ids:
+                        self.tree_workers.selection_set(item_id)
 
         except Exception:
             pass
 
         self.root.after(1000, self._update_ui_loop)
+
+    def _on_tree_select(self, event):
+        selected = self.tree_workers.selection()
+        if selected:
+            item = self.tree_workers.item(selected[0])
+            vals = item.get("values", [])
+            if vals:
+                self.cbo_worker_target.set(vals[0])
+
+    def _show_context_menu(self, event):
+        item = self.tree_workers.identify_row(event.y)
+        if item:
+            self.tree_workers.selection_set(item)
+            vals = self.tree_workers.item(item).get("values", [])
+            if vals:
+                w_id = vals[0]
+                self.cbo_worker_target.set(w_id)
+                self.context_menu.entryconfigure(0, label=f"▶ [{w_id}] の計算を開始")
+                self.context_menu.entryconfigure(1, label=f"⏸ [{w_id}] を一時停止")
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
+
+    def _start_all_workers_cmd(self):
+        if not self.server or not self.is_running:
+            messagebox.showwarning("案内", "親サーバーが起動していません。")
+            return
+        n = self.server.start_all_workers()
+        if n == 0:
+            messagebox.showinfo("案内", "接続中の待機ワーカーがいません。\nワーカーPCが接続されるのをお待ちください。")
+
+    def _pause_all_workers_cmd(self):
+        if not self.server or not self.is_running:
+            return
+        self.server.pause_all_workers()
+
+    def _start_selected_worker_cmd(self):
+        if not self.server or not self.is_running:
+            messagebox.showwarning("案内", "親サーバーが起動していません。")
+            return
+        target = self.cbo_worker_target.get().strip()
+        if not target:
+            messagebox.showinfo("選択", "対象のワーカーを一覧またはテーブルから選択してください。")
+            return
+        ok = self.server.start_worker(target)
+        if not ok:
+            messagebox.showwarning("警告", f"ワーカー {target} を開始できませんでした（未接続または切断中）。")
+
+    def _pause_selected_worker_cmd(self):
+        if not self.server or not self.is_running:
+            return
+        target = self.cbo_worker_target.get().strip()
+        if target:
+            self.server.pause_worker(target)
 
     def _clear_log(self):
         self.log_text.configure(state='normal')

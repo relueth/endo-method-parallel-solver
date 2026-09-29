@@ -31,6 +31,8 @@ from typing import Dict, Optional, Any
 
 # パス設定
 BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+from discovery import ServerDiscoveryService, get_local_ip_addresses
 DATA_DIR = BASE_DIR / "data"
 RESULTS_DIR = DATA_DIR / "results"
 BACKUP_DIR = DATA_DIR / "backups"
@@ -411,11 +413,14 @@ class DistributedServer:
         # ワーカー管理辞書: worker_id -> info
         # {"worker_id": str, "address": str, "status": str, "task_id": Optional[int], "task_range": str, "last_heartbeat": float, "conn": socket}
         self.workers: Dict[str, Dict[str, Any]] = {}
-        self.workers_lock = threading.Lock()
+        self.workers_lock = threading.RLock()
 
         self.running = False
         self.server_socket: Optional[socket.socket] = None
         self.start_time = time.time()
+
+        # LAN自動探索サービス (UDP 5001)
+        self.discovery_service = ServerDiscoveryService(tcp_port=self.port)
 
     def load_config(self, path: Path) -> dict:
         if path.exists():
@@ -438,6 +443,10 @@ class DistributedServer:
         logger.info(f"=== LAN 分散計算 親サーバー 起動 ===")
         logger.info(f"TCP リスニング: {self.host}:{self.port}")
         logger.info(f"最大想定ワーカー: 22台 (Heartbeatタイムアウト: {self.heartbeat_timeout}秒)")
+
+        # LAN内 親サーバー自動検出サービス開始
+        self.discovery_service.start()
+        logger.info(f"親サーバー自動探索サービス起動: UDPポート 5001 (ワーカー側自動IP検出対応)")
 
         # バックグラウンド監視スレッド開始
         threading.Thread(target=self._heartbeat_monitor_loop, daemon=True).start()
@@ -465,6 +474,11 @@ class DistributedServer:
 
     def stop(self):
         self.running = False
+        if hasattr(self, "discovery_service") and self.discovery_service:
+            try:
+                self.discovery_service.stop()
+            except Exception:
+                pass
         if self.server_socket:
             try:
                 self.server_socket.close()
@@ -498,22 +512,57 @@ class DistributedServer:
 
                 # 12.1 REGISTER
                 if msg_type == "register":
-                    worker_id = msg.get("worker_id", f"PC_{worker_ip}")
+                    req_id = (msg.get("worker_id") or "").strip()
                     with self.workers_lock:
+                        # 現在アクティブに接続されているワーカー（切断済みを除外）
+                        active_worker_ids = [
+                            w_id for w_id, w in self.workers.items()
+                            if w.get("status") in ("CONNECTED", "RUNNING", "WAITING", "STANDBY") and w.get("conn") is not None
+                        ]
+                        n = len(active_worker_ids)
+                        suggested_id = f"PC{n + 1:02d}"
+
+                        # ワーカーID自動採番:
+                        # 空欄、AUTO、自動、または既にアクティブ接続されているIDと重複している場合は自動採番
+                        if not req_id or req_id.upper() in ("AUTO", "自動", "NONE") or req_id in active_worker_ids:
+                            if suggested_id not in active_worker_ids:
+                                worker_id = suggested_id
+                            else:
+                                # 万が一の欠番・重複回避: 空いている最小の PCxx を探す
+                                idx = 1
+                                while f"PC{idx:02d}" in active_worker_ids:
+                                    idx += 1
+                                worker_id = f"PC{idx:02d}"
+                        else:
+                            worker_id = req_id
+
                         self.workers[worker_id] = {
                             "worker_id": worker_id,
                             "address": worker_ip,
-                            "status": "CONNECTED",
+                            "status": "STANDBY",
+                            "is_active_computing": False,
                             "task_id": None,
-                            "task_range": "-",
+                            "task_range": "待機中 (親サーバー指示待ち)",
                             "last_heartbeat": time.time(),
                             "conn": client_sock,
                             "completed_count": self.workers.get(worker_id, {}).get("completed_count", 0)
                         }
-                    logger.info(f"[REGISTER] ワーカー登録: {worker_id} ({worker_ip})")
 
-                    # 直ちにタスク割り当てを試みる
-                    self._assign_next_task(client_sock, worker_id)
+                    logger.info(f"[REGISTER] ワーカー接続・待機完了: {worker_id} ({worker_ip}) [現在接続中: {len(active_worker_ids) + 1}台]")
+
+                    # クライアントへ登録完了と確定した worker_id を返信
+                    self._send_json(client_sock, {
+                        "type": "registered",
+                        "worker_id": worker_id,
+                        "assigned_id": worker_id,
+                        "status": "STANDBY"
+                    })
+
+                    # 親サーバーからの開始指示待機メッセージを送信 (即時タスク割り当ては行わない)
+                    self._send_json(client_sock, {
+                        "type": "standby",
+                        "message": "親サーバーに接続しました。親サーバーからの計算開始指示を待機しています。"
+                    })
 
                 # 12.4 HEARTBEAT
                 elif msg_type == "heartbeat":
@@ -531,22 +580,44 @@ class DistributedServer:
                     if task_id is not None and worker_id:
                         # タスク完了記録
                         self.task_mgr.complete_task(task_id, worker_id, result)
+                        
+                        is_active = False
                         with self.workers_lock:
                             if worker_id in self.workers:
-                                self.workers[worker_id]["status"] = "CONNECTED"
                                 self.workers[worker_id]["task_id"] = None
                                 self.workers[worker_id]["task_range"] = "-"
                                 self.workers[worker_id]["completed_count"] = self.workers[worker_id].get("completed_count", 0) + 1
+                                is_active = self.workers[worker_id].get("is_active_computing", False)
+                                if is_active:
+                                    self.workers[worker_id]["status"] = "CONNECTED"
+                                else:
+                                    self.workers[worker_id]["status"] = "STANDBY"
+                                    self.workers[worker_id]["task_range"] = "待機中 (一時停止)"
 
                         logger.info(f"[DONE] ワーカー {worker_id} が task_id {task_id} を完了 (解の総数: {result.get('total_solutions', 0)})")
 
-                        # 次のタスクを自動割り当て
-                        self._assign_next_task(client_sock, worker_id)
+                        # もし計算許可中なら次のタスクを自動割り当て、そうでなければ STANDBY を送信
+                        if is_active:
+                            self._assign_next_task(client_sock, worker_id)
+                        else:
+                            self._send_json(client_sock, {
+                                "type": "standby",
+                                "message": "タスク完了。親サーバーが一時停止中のため待機します。"
+                            })
 
                 # その他 (タスク要求など)
                 elif msg_type == "get_task":
                     if worker_id:
-                        self._assign_next_task(client_sock, worker_id)
+                        is_active = False
+                        with self.workers_lock:
+                            is_active = self.workers.get(worker_id, {}).get("is_active_computing", False)
+                        if is_active:
+                            self._assign_next_task(client_sock, worker_id)
+                        else:
+                            self._send_json(client_sock, {
+                                "type": "standby",
+                                "message": "親サーバーからの開始指示を待機しています。"
+                            })
 
         except (ConnectionResetError, BrokenPipeError, socket.error) as e:
             logger.warning(f"ワーカー {worker_id or worker_ip} との通信が切断されました: {e}")
@@ -607,6 +678,7 @@ class DistributedServer:
         with self.workers_lock:
             if worker_id in self.workers:
                 self.workers[worker_id]["status"] = "DISCONNECTED"
+                self.workers[worker_id]["conn"] = None
 
         # 仕様書 第10項: 異常終了したワーカーが RUNNING で保持していたタスクを PENDING に戻す
         reverted_task_id = self.task_mgr.revert_worker_task(worker_id)
@@ -614,6 +686,79 @@ class DistributedServer:
             logger.warning(
                 f"【タスク再割り当て】ワーカー {worker_id} 離脱に伴い、処理中だった task_id {reverted_task_id} を PENDING に復帰させました。"
             )
+
+    def start_worker(self, worker_id: str) -> bool:
+        """指定した worker_id のワーカーに計算開始を指示"""
+        sock = None
+        st = None
+        with self.workers_lock:
+            w_info = self.workers.get(worker_id)
+            if not w_info or w_info.get("status") == "DISCONNECTED":
+                logger.warning(f"ワーカー {worker_id} は未接続のため開始できません。")
+                return False
+
+            w_info["is_active_computing"] = True
+            sock = w_info.get("conn")
+            st = w_info.get("status")
+
+        if sock and st in ("STANDBY", "WAITING", "CONNECTED"):
+            self._assign_next_task(sock, worker_id)
+            logger.info(f"【個別開始】ワーカー {worker_id} の計算処理を開始しました。")
+            return True
+        elif st == "RUNNING":
+            logger.info(f"ワーカー {worker_id} は既に実行中です。")
+            return True
+        return False
+
+    def start_all_workers(self) -> int:
+        """接続中の全ワーカーに一括で計算開始を指示"""
+        count = 0
+        with self.workers_lock:
+            active_ids = [
+                w_id for w_id, w in self.workers.items()
+                if w.get("status") in ("STANDBY", "WAITING", "CONNECTED") and w.get("conn") is not None
+            ]
+
+        for w_id in active_ids:
+            if self.start_worker(w_id):
+                count += 1
+
+        logger.info(f"【一括開始】接続中ワーカー {count} 台に計算開始を指示しました。")
+        return count
+
+    def pause_worker(self, worker_id: str) -> bool:
+        """指定した worker_id の計算を一時停止 (STANDBYへ)"""
+        sock = None
+        should_send = False
+        with self.workers_lock:
+            w_info = self.workers.get(worker_id)
+            if not w_info or w_info.get("status") == "DISCONNECTED":
+                return False
+
+            w_info["is_active_computing"] = False
+            sock = w_info.get("conn")
+            if w_info.get("status") in ("WAITING", "CONNECTED"):
+                w_info["status"] = "STANDBY"
+                w_info["task_range"] = "待機中 (一時停止)"
+                should_send = True
+
+        if should_send and sock:
+            self._send_json(sock, {"type": "standby", "message": "親サーバーにより一時停止されました。"})
+        logger.info(f"【一時停止指示】ワーカー {worker_id} に一時停止を設定しました。")
+        return True
+
+    def pause_all_workers(self) -> int:
+        """全ワーカーの計算を一時停止"""
+        count = 0
+        with self.workers_lock:
+            active_ids = [w_id for w_id, w in self.workers.items() if w.get("status") != "DISCONNECTED"]
+
+        for w_id in active_ids:
+            if self.pause_worker(w_id):
+                count += 1
+
+        logger.info(f"【一括一時停止】ワーカー {count} 台に一時停止を指示しました。")
+        return count
 
     def _heartbeat_monitor_loop(self):
         """第9項: 30秒間 heartbeat が届かないワーカーを異常終了として検出"""
@@ -624,7 +769,7 @@ class DistributedServer:
 
             with self.workers_lock:
                 for w_id, w_info in self.workers.items():
-                    if w_info["status"] in ("CONNECTED", "RUNNING", "WAITING"):
+                    if w_info["status"] in ("CONNECTED", "RUNNING", "WAITING", "STANDBY"):
                         elapsed = now - w_info["last_heartbeat"]
                         if elapsed > self.heartbeat_timeout:
                             timed_out_workers.append(w_id)

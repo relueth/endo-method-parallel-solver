@@ -37,6 +37,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from worker import WorkerClient, calculate, LOGS_DIR, CONFIG_FILE
+from discovery import get_local_ip_addresses
 
 # Windows 高DPI対応
 try:
@@ -96,24 +97,37 @@ class WorkerGUI:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def load_settings(self):
+        local_ips = get_local_ip_addresses()
+        detected_ip = local_ips[0] if local_ips else "127.0.0.1"
+
         default = {
-            "worker_id": "PC01",
-            "server_ip": "192.168.1.100",
+            "worker_id": "AUTO",
+            "server_ip": detected_ip,
             "server_port": 5000
         }
         if self.cfg_file.exists():
             try:
                 with open(self.cfg_file, "r", encoding="utf-8") as f:
-                    default.update(json.load(f))
+                    saved = json.load(f)
+                    # 以前の古いダミー固定IP "192.168.1.100" やAUTO・空文字が残っていた場合は本機IPを自動入力
+                    if saved.get("server_ip") in ("192.168.1.100", "AUTO", "", None):
+                        saved["server_ip"] = detected_ip
+                    default.update(saved)
             except Exception:
                 pass
+        # 以前のバージョンでPC01が保存されていた場合もAUTOを推奨
+        if default.get("worker_id") == "PC01":
+            default["worker_id"] = "AUTO"
         return default
 
     def save_settings(self):
         try:
+            w_id = self.entry_worker_id.get().strip()
+            if not w_id:
+                w_id = "AUTO"
             with open(self.cfg_file, "w", encoding="utf-8") as f:
                 json.dump({
-                    "worker_id": self.entry_worker_id.get().strip(),
+                    "worker_id": w_id,
                     "server_ip": self.entry_server_ip.get().strip(),
                     "server_port": int(self.entry_server_port.get().strip())
                 }, f, indent=2)
@@ -131,24 +145,38 @@ class WorkerGUI:
         grid = ttk.Frame(conn_frame)
         grid.pack(fill=tk.X)
 
+        # 1行目: ワーカーID (AUTO自動採番案内)
         ttk.Label(grid, text="ワーカーID:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=4)
-        self.entry_worker_id = ttk.Entry(grid, width=10, font=("Segoe UI", 10, "bold"))
-        self.entry_worker_id.insert(0, self.settings.get("worker_id", "PC01"))
+        self.entry_worker_id = ttk.Entry(grid, width=12, font=("Segoe UI", 10, "bold"))
+        self.entry_worker_id.insert(0, self.settings.get("worker_id", "AUTO"))
         self.entry_worker_id.grid(row=0, column=1, padx=4, pady=4)
 
-        ttk.Label(grid, text="親サーバーIP:").grid(row=0, column=2, sticky=tk.W, padx=(10, 4), pady=4)
-        self.entry_server_ip = ttk.Entry(grid, width=16, font=("Consolas", 10))
-        self.entry_server_ip.insert(0, self.settings.get("server_ip", "192.168.1.100"))
-        self.entry_server_ip.grid(row=0, column=3, padx=4, pady=4)
+        lbl_hint = ttk.Label(
+            grid, text="※AUTOまたは空欄で接続順に自動採番 (PC01, PC02...)",
+            font=("Segoe UI", 9), foreground="#0369a1"
+        )
+        lbl_hint.grid(row=0, column=2, columnspan=4, sticky=tk.W, padx=(8, 4), pady=4)
 
-        ttk.Label(grid, text="ポート:").grid(row=0, column=4, sticky=tk.W, padx=(10, 4), pady=4)
+        # 2行目: 親サーバーIP & ポート (起動時に本機IPを自動入力・手動で直接書き換えも可能)
+        ttk.Label(grid, text="親サーバーIP:").grid(row=1, column=0, sticky=tk.W, padx=4, pady=4)
+        self.entry_server_ip = ttk.Entry(grid, width=16, font=("Consolas", 10))
+        self.entry_server_ip.insert(0, self.settings.get("server_ip", "127.0.0.1"))
+        self.entry_server_ip.grid(row=1, column=1, padx=4, pady=4)
+
+        ttk.Label(grid, text="ポート:").grid(row=1, column=2, sticky=tk.W, padx=(12, 4), pady=4)
         self.entry_server_port = ttk.Entry(grid, width=8, font=("Consolas", 10))
         self.entry_server_port.insert(0, str(self.settings.get("server_port", 5000)))
-        self.entry_server_port.grid(row=0, column=5, padx=4, pady=4)
+        self.entry_server_port.grid(row=1, column=3, padx=4, pady=4)
+
+        lbl_ip_note = ttk.Label(
+            grid, text="※IP自動入力済み (手動での書き換え・変更も可能)",
+            font=("Segoe UI", 9), foreground="#64748b"
+        )
+        lbl_ip_note.grid(row=1, column=4, sticky=tk.W, padx=(8, 4), pady=4)
 
         # 接続ボタン
         self.btn_connect = tk.Button(
-            conn_frame, text="▶ 接続して計算開始", font=("Segoe UI", 11, "bold"),
+            conn_frame, text="▶ サーバーへ接続 (待機開始)", font=("Segoe UI", 11, "bold"),
             bg="#0284c7", fg="white", activebackground="#0369a1", activeforeground="white",
             padx=16, pady=6, cursor="hand2", relief="raised", command=self._toggle_connection
         )
@@ -215,23 +243,42 @@ class WorkerGUI:
         logger = logging.getLogger("ParallelWorker")
         logger.addHandler(text_handler)
 
+    def _on_worker_registered(self, assigned_id: str):
+        """親サーバーから確定されたワーカーID (PC01, PC02...) を画面に即座に反映"""
+        def update_ui():
+            try:
+                self.entry_worker_id.config(state="normal")
+                self.entry_worker_id.delete(0, tk.END)
+                self.entry_worker_id.insert(0, assigned_id)
+                self.entry_worker_id.config(state="disabled")
+                self.root.title(f"LAN分散計算システム - ワーカーPC [{assigned_id}] (Endo Method φ⁻¹(n))")
+                self.lbl_status_badge.config(
+                    text=f"● 接続中 - {assigned_id} (CONNECTED)",
+                    bg="#dcfce7", fg="#15803d"
+                )
+            except Exception:
+                pass
+        self.root.after(0, update_ui)
+
     def _toggle_connection(self):
         if not self.is_connected:
             # 入力バリデーション
             w_id = self.entry_worker_id.get().strip()
+            if not w_id:
+                w_id = "AUTO"
             s_ip = self.entry_server_ip.get().strip()
             try:
                 s_port = int(self.entry_server_port.get().strip())
-                if not w_id or not s_ip:
-                    raise ValueError("項目をすべて入力してください")
+                if not s_ip:
+                    raise ValueError("親サーバーのIPアドレスを入力してください")
             except Exception as e:
                 messagebox.showerror("入力エラー", f"設定値を確認してください:\n{e}")
                 return
 
             self.save_settings()
 
-            # ワーカーインスタンス作成
-            self.worker = WorkerClient(w_id, s_ip, s_port)
+            # ワーカーインスタンス作成 (サーバー自動採番コールバックを連携)
+            self.worker = WorkerClient(w_id, s_ip, s_port, on_registered=self._on_worker_registered)
             self.worker_thread = threading.Thread(target=self.worker.start, daemon=True)
             self.worker_thread.start()
             self.is_connected = True
@@ -249,12 +296,13 @@ class WorkerGUI:
             self.is_connected = False
 
             self.btn_connect.config(
-                text="▶ 接続して計算開始", bg="#0284c7", activebackground="#0369a1"
+                text="▶ サーバーへ接続 (待機開始)", bg="#0284c7", activebackground="#0369a1"
             )
             self.lbl_status_badge.config(
                 text="● 未接続 (DISCONNECTED)", bg="#f1f5f9", fg="#64748b"
             )
             self.lbl_current_task.config(text="なし (停止中)")
+            self.root.title("LAN分散計算システム - ワーカーPC (Endo Method φ⁻¹(n))")
             self.entry_worker_id.config(state="normal")
             self.entry_server_ip.config(state="normal")
             self.entry_server_port.config(state="normal")
@@ -263,14 +311,17 @@ class WorkerGUI:
         """ワーカーの状態を定期的にUIに反映"""
         if self.is_connected and self.worker:
             st = self.worker.state
+            wid = getattr(self.worker, "worker_id", "PC")
             if st == "RUNNING":
-                self.lbl_status_badge.config(text="● 計算中 (RUNNING)", bg="#dbeafe", fg="#1d4ed8")
+                self.lbl_status_badge.config(text=f"● 計算実行中 [{wid}] (RUNNING)", bg="#dbeafe", fg="#1d4ed8")
+            elif st == "STANDBY":
+                self.lbl_status_badge.config(text=f"● 接続中・開始指示待ち [{wid}] (STANDBY)", bg="#fef3c7", fg="#b45309")
             elif st == "WAITING":
-                self.lbl_status_badge.config(text="● 待機中 (WAITING - タスク待ち)", bg="#fef3c7", fg="#b45309")
+                self.lbl_status_badge.config(text=f"● タスク割当待ち [{wid}] (WAITING)", bg="#f1f5f9", fg="#475569")
             elif st == "CONNECTED":
-                self.lbl_status_badge.config(text="● 接続完了 (CONNECTED)", bg="#dcfce7", fg="#15803d")
+                self.lbl_status_badge.config(text=f"● 接続中 [{wid}] (CONNECTED)", bg="#dcfce7", fg="#15803d")
             else:
-                self.lbl_status_badge.config(text="● 再接続待機中 (DISCONNECTED)", bg="#fee2e2", fg="#b91c1c")
+                self.lbl_status_badge.config(text="● 未接続 / 再接続待機中 (DISCONNECTED)", bg="#fee2e2", fg="#b91c1c")
 
             if self.worker.current_task:
                 tid = self.worker.current_task.get("task_id", "-")
@@ -278,7 +329,10 @@ class WorkerGUI:
                 e = self.worker.current_task.get("end", "-")
                 self.lbl_current_task.config(text=f"task_{tid} [{s} 〜 {e}]")
             else:
-                self.lbl_current_task.config(text="待機中 (割り当て待ち)")
+                if st == "STANDBY":
+                    self.lbl_current_task.config(text="なし (親サーバーからの開始指示待ち)")
+                else:
+                    self.lbl_current_task.config(text="待機中 (割り当て待ち)")
 
             self.lbl_completed_count.config(text=f"{self.worker.completed_tasks_count} 件")
             self.lbl_solutions_count.config(text=f"{self.worker.total_solutions_count:,} 個 (φ⁻¹(n))")

@@ -26,6 +26,9 @@ from typing import Dict, Any, Optional
 from Endo_method import phi_inverse, phi_inverse_count, calculate_range
 
 BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+from discovery import get_local_ip_addresses
+
 LOGS_DIR = BASE_DIR / "logs"
 CONFIG_FILE = BASE_DIR / "config.json"
 LOGS_DIR.mkdir(exist_ok=True)
@@ -108,12 +111,15 @@ def calculate(start: int, end: int, max_workers: Optional[int] = None) -> Dict[s
 # ワーカークライアントクラス
 # ==========================================
 class WorkerClient:
-    def __init__(self, worker_id: str, server_ip: str, server_port: int, heartbeat_interval: float = 5.0, reconnect_delay: float = 3.0):
+    def __init__(self, worker_id: str = "AUTO", server_ip: str = "127.0.0.1", server_port: int = 5000,
+                 heartbeat_interval: float = 5.0, reconnect_delay: float = 3.0,
+                 on_registered: Optional[Any] = None):
         self.worker_id = worker_id
         self.server_ip = server_ip
         self.server_port = server_port
         self.heartbeat_interval = heartbeat_interval
         self.reconnect_delay = reconnect_delay
+        self.on_registered = on_registered
 
         # ワーカー状態: DISCONNECTED, CONNECTED, RUNNING, WAITING (第13項)
         self.state = "DISCONNECTED"
@@ -159,9 +165,17 @@ class WorkerClient:
 
     def _connect_and_process(self):
         """サーバーに接続し、REGISTER送信、heartbeat開始、タスク処理を行う"""
-        logger.info(f"サーバー {self.server_ip}:{self.server_port} へ接続中...")
+        target_ip = self.server_ip
+        target_port = self.server_port
+
+        if target_ip.upper() in ("AUTO", "自動", ""):
+            local_ips = get_local_ip_addresses()
+            target_ip = local_ips[0] if local_ips else "127.0.0.1"
+            logger.info(f"親サーバーIPを自動設定しました: {target_ip}:{target_port}")
+
+        logger.info(f"サーバー {target_ip}:{target_port} へ接続中...")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((self.server_ip, self.server_port))
+        sock.connect((target_ip, target_port))
 
         with self.sock_lock:
             self.sock = sock
@@ -206,8 +220,21 @@ class WorkerClient:
     def _handle_server_message(self, msg: dict):
         msg_type = msg.get("type")
 
+        # 登録応答 (サーバー側からのPCID自動採番)
+        if msg_type in ("registered", "register_ack"):
+            assigned_id = msg.get("worker_id") or msg.get("assigned_id")
+            if assigned_id:
+                old_id = self.worker_id
+                self.worker_id = assigned_id
+                logger.info(f"[REGISTER完了] サーバーによりワーカーID '{assigned_id}' が確定しました (元: {old_id})")
+                if self.on_registered:
+                    try:
+                        self.on_registered(assigned_id)
+                    except Exception as e:
+                        logger.debug(f"on_registered callback エラー: {e}")
+
         # 第12.2項 TASK
-        if msg_type == "task":
+        elif msg_type == "task":
             task_info = msg.get("task", {})
             task_id = task_info.get("task_id")
             start_val = task_info.get("start")
@@ -242,6 +269,12 @@ class WorkerClient:
             # サーバーからのハートビート正常受領
             pass
 
+        # STANDBY (親サーバーからの開始指示待機)
+        elif msg_type == "standby":
+            self.state = "STANDBY"
+            msg_text = msg.get("message", "親サーバーからの計算開始指示を待機しています。")
+            logger.info(f"[待機] {msg_text}")
+
         # 第12.6項 WAIT
         elif msg_type == "wait":
             self.state = "WAITING"
@@ -275,8 +308,8 @@ class WorkerClient:
 
 def main():
     parser = argparse.ArgumentParser(description="LAN 分散計算システム ワーカーPC")
-    parser.add_argument("--id", "--worker_id", dest="worker_id", default="PC01", help="ワーカーID (例: PC01 〜 PC22)")
-    parser.add_argument("--server", dest="server_ip", default="127.0.0.1", help="親サーバーIPアドレス")
+    parser.add_argument("--id", "--worker_id", dest="worker_id", default="AUTO", help="ワーカーID (省略またはAUTOでサーバーがPC01から自動採番)")
+    parser.add_argument("--server", dest="server_ip", default="AUTO", help="親サーバーIPアドレス (省略またはAUTOでLAN内自動検出)")
     parser.add_argument("--port", type=int, default=5000, help="親サーバーTCPポート")
     parser.add_argument("--config", default=str(CONFIG_FILE), help="設定ファイルパス")
     args = parser.parse_args()
@@ -292,12 +325,18 @@ def main():
                 w_cfg = cfg.get("worker", {})
                 heartbeat_interval = float(w_cfg.get("heartbeat_interval", 5.0))
                 reconnect_delay = float(w_cfg.get("reconnect_delay", 3.0))
-                if args.server_ip == "127.0.0.1" and "server_ip" in w_cfg:
+                if args.server_ip == "AUTO" and "server_ip" in w_cfg and w_cfg["server_ip"] != "127.0.0.1":
                     args.server_ip = w_cfg["server_ip"]
                 if args.port == 5000 and "server_port" in w_cfg:
                     args.port = int(w_cfg["server_port"])
         except Exception:
             pass
+
+    # 親サーバーIPが AUTO または未指定の場合は本機IPを自動設定 (手動指定も可能)
+    if args.server_ip.upper() in ("AUTO", "自動"):
+        local_ips = get_local_ip_addresses()
+        args.server_ip = local_ips[0] if local_ips else "127.0.0.1"
+        logger.info(f"親サーバーIPを自動設定しました: {args.server_ip}:{args.port} (手動入力での上書きも可能)")
 
     client = WorkerClient(
         worker_id=args.worker_id,

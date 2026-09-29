@@ -24,19 +24,24 @@ if errorlevel 1 (
 )
 
 echo.
-set /p WORKER_ID="このワーカーのIDを入力してください (例: PC01, PC02): "
-if "%WORKER_ID%"=="" set WORKER_ID=PC01
+set /p WORKER_ID="ワーカーIDを入力 [Enterでサーバー自動割当 (PC01, PC02...)]: "
+if "%WORKER_ID%"=="" set WORKER_ID=AUTO
 
-set /p SERVER_IP="親サーバーのIPv4アドレスを入力してください (例: 192.168.1.100): "
-if "%SERVER_IP%"=="" (
-    echo [エラー] 親サーバーのIPアドレスを入力してください。
-    pause
-    exit /b 1
-)
+set /p SERVER_IP="親サーバーIP [Enterで自動入力 / または直接入力]: "
+if "%SERVER_IP%"=="" set SERVER_IP=AUTO
 
 echo.
 echo ===================================================
-echo  ワーカー %WORKER_ID% を起動し、サーバー %SERVER_IP%:5000 に接続します
+if "%SERVER_IP%"=="AUTO" (
+    echo  親サーバー: 本機IPを自動入力 (ポート5000)
+) else (
+    echo  親サーバー: %SERVER_IP%:5000
+)
+if "%WORKER_ID%"=="AUTO" (
+    echo  ワーカーID: サーバー接続順に自動割当 (PC01, PC02...)
+) else (
+    echo  ワーカーID: %WORKER_ID%
+)
 echo  終了する場合は Ctrl + C を押してください。
 echo ===================================================
 echo.
