@@ -8,14 +8,17 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname || process.cwd(), '.'),
       },
     },
+    optimizeDeps: {
+      include: ['react', 'react-dom', 'recharts', 'lucide-react', 'motion'],
+    },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
+      // Cloudflare Tunnel や外部ドメインからのアクセスを許可
+      allowedHosts: true as const,
+      // 外部トンネル経由での不要な HMR WebSocket 接続エラーを無効化
+      hmr: false,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };

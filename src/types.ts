@@ -11,6 +11,23 @@ export interface WorkerSlot {
   address: string;
 }
 
+export interface WebWorkerSlot {
+  worker_id: string;
+  type: "WEB";
+  is_active_process: boolean;
+  status: "STANDBY" | "RUNNING" | "PAUSED" | "DISCONNECTED";
+  task_id: number | null;
+  task_range: string;
+  last_heartbeat_ago: number | null;
+  completed_count: number;
+  total_solutions: number;
+  cores: number;
+  engine: string;
+  speed: number;
+  progress_pct: number;
+  address: string;
+}
+
 export interface DbStats {
   exists: boolean;
   pending: number;
@@ -26,6 +43,8 @@ export interface ClusterStatus {
   db_stats: DbStats;
   active_workers_count: number;
   workers: WorkerSlot[];
+  web_workers?: WebWorkerSlot[];
+  lan_ips?: string[];
   updated_at: string;
   uptime_seconds: number;
 }

@@ -1,134 +1,135 @@
 import React from "react";
-import { Server, Play, Square, Cpu, RefreshCw, Layers } from "lucide-react";
+import { Server, Play, Square, Cpu, RefreshCw, Smartphone } from "lucide-react";
 
 interface HeaderProps {
+  activeTab: "server" | "worker" | "benchmark" | "endo" | "code";
+  onSelectTab: (tab: "server" | "worker" | "benchmark" | "endo" | "code") => void;
   serverRunning: boolean;
   activeWorkers: number;
   totalWorkers: number;
-  onStartServer: () => void;
-  onStopServer: () => void;
-  onSpawnWorkers: (count: number) => void;
-  onResetTasks: () => void;
-  isActionLoading: boolean;
+  onOpenShareModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
+  activeTab,
+  onSelectTab,
   serverRunning,
   activeWorkers,
   totalWorkers,
-  onStartServer,
-  onStopServer,
-  onSpawnWorkers,
-  onResetTasks,
-  isActionLoading,
+  onOpenShareModal,
 }) => {
   return (
-    <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md sticky top-0 z-30 shadow-xs">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div className="flex items-center space-x-3.5">
-          <div className="w-10 h-10 rounded-xl bg-slate-900 text-cyan-400 flex items-center justify-center font-mono font-bold text-lg shadow-inner">
+    <header className="border-b border-slate-800 bg-slate-950/90 backdrop-blur-md sticky top-0 z-30 shadow-md">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        {/* Zone 1: Wordmark */}
+        <div className="flex items-center space-x-3">
+          <div className="w-9 h-9 rounded-lg bg-slate-900 border border-cyan-800 text-cyan-400 flex items-center justify-center font-mono font-bold text-base shadow-inner">
             φ⁻¹
           </div>
           <div>
-            <div className="flex items-center space-x-2.5">
-              <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
+            <div className="flex items-center space-x-2">
+              <span className="text-base sm:text-lg font-bold text-slate-100 tracking-tight whitespace-nowrap">
                 LAN分散計算システム
-              </h1>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-50 text-cyan-800 border border-cyan-200 font-mono">
+              </span>
+              <span className="text-[11px] px-2 py-0.5 rounded font-mono font-medium bg-cyan-950 text-cyan-300 border border-cyan-800">
                 Endo Method
               </span>
             </div>
-            <p className="text-xs text-slate-500 font-medium">
-              親サーバー1台・最大22台ワーカーPCによるオイラー関数逆像 φ(x)=n 動的並列求解
-            </p>
           </div>
         </div>
 
-        {/* Status Pills & Action Controls */}
-        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+        {/* Zone 2: Navigation Links (Mode Selection) */}
+        <nav className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto py-1">
+          <button
+            onClick={() => onSelectTab("server")}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === "server"
+                ? "bg-sky-500 text-slate-950 shadow-sm shadow-sky-500/30"
+                : "bg-slate-900 text-slate-300 hover:text-white border border-slate-800"
+            }`}
+          >
+            <span>🖥️ 親サーバー</span>
+            <span className="text-[10px] opacity-75 font-mono">(gui_server)</span>
+          </button>
+
+          <button
+            onClick={() => onSelectTab("worker")}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              activeTab === "worker"
+                ? "bg-cyan-400 text-slate-950 shadow-sm shadow-cyan-400/30"
+                : "bg-slate-900 text-slate-300 hover:text-white border border-slate-800"
+            }`}
+          >
+            <span>⚡ ワーカーPC</span>
+            <span className="text-[10px] opacity-75 font-mono">(gui_worker)</span>
+          </button>
+
+          <button
+            onClick={() => onSelectTab("benchmark")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "benchmark"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            📊 処理時間グラフ
+          </button>
+
+          <button
+            onClick={() => onSelectTab("endo")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "endo"
+                ? "bg-slate-800 text-cyan-300 border border-slate-700 font-bold"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            🧮 単体検算
+          </button>
+
+          <button
+            onClick={() => onSelectTab("code")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === "code"
+                ? "bg-slate-800 text-cyan-300 border border-slate-700 font-bold"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            📖 起動手順
+          </button>
+        </nav>
+
+        {/* Zone 3: 1-2 Primary Actions & Quick Telemetry */}
+        <div className="flex items-center gap-2.5 shrink-0">
           {/* Server Indicator */}
-          <div className="flex items-center px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium">
+          <div className="hidden sm:flex items-center px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-xs font-mono">
             <span
               className={`w-2 h-2 rounded-full mr-2 ${
-                serverRunning ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
+                serverRunning ? "bg-emerald-400 animate-pulse" : "bg-slate-600"
               }`}
             />
-            <span className="text-slate-600 mr-1.5">親サーバー:</span>
-            <span
-              className={`font-semibold ${
-                serverRunning ? "text-emerald-700" : "text-rose-700"
-              }`}
-            >
-              {serverRunning ? "RUNNING (0.0.0.0:5000)" : "STOPPED"}
+            <span className="text-slate-400 mr-1.5">サーバー:</span>
+            <span className={`font-semibold ${serverRunning ? "text-emerald-400" : "text-slate-500"}`}>
+              {serverRunning ? "稼働中" : "停止中"}
             </span>
           </div>
 
           {/* Active Workers Badge */}
-          <div className="flex items-center px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium">
-            <Cpu className="w-3.5 h-3.5 mr-1.5 text-cyan-600" />
-            <span className="text-slate-600 mr-1">ワーカー:</span>
-            <span className="font-bold text-slate-900 font-mono">
-              {activeWorkers} / {totalWorkers}
-            </span>
+          <div className="flex items-center px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-xs font-mono">
+            <Cpu className="w-3.5 h-3.5 mr-1.5 text-cyan-400" />
+            <span className="text-slate-400 mr-1">稼働:</span>
+            <span className="font-bold text-slate-100 tabular-nums">{activeWorkers}台</span>
           </div>
 
-          {/* Action Buttons */}
-          <div className="flex items-center space-x-2">
-            {!serverRunning ? (
-              <button
-                id="btn-start-server"
-                disabled={isActionLoading}
-                onClick={onStartServer}
-                className="inline-flex items-center px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs transition-colors disabled:opacity-50"
-              >
-                <Play className="w-3.5 h-3.5 mr-1 fill-current" />
-                サーバー起動
-              </button>
-            ) : (
-              <button
-                id="btn-stop-server"
-                disabled={isActionLoading}
-                onClick={onStopServer}
-                className="inline-flex items-center px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 text-white hover:bg-rose-700 shadow-xs transition-colors disabled:opacity-50"
-              >
-                <Square className="w-3.5 h-3.5 mr-1 fill-current" />
-                サーバー停止
-              </button>
-            )}
-
-            {serverRunning && (
-              <>
-                <button
-                  id="btn-spawn-workers-5"
-                  disabled={isActionLoading}
-                  onClick={() => onSpawnWorkers(activeWorkers + 3 <= 22 ? activeWorkers + 3 : 22)}
-                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 shadow-xs transition-colors disabled:opacity-50"
-                >
-                  <Cpu className="w-3.5 h-3.5 mr-1" />
-                  +3 ワーカー
-                </button>
-                <button
-                  id="btn-spawn-workers-22"
-                  disabled={isActionLoading || activeWorkers >= 22}
-                  onClick={() => onSpawnWorkers(22)}
-                  className="hidden sm:inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 text-white hover:bg-cyan-700 shadow-xs transition-colors disabled:opacity-50"
-                >
-                  <Layers className="w-3.5 h-3.5 mr-1" />
-                  全22台一括
-                </button>
-              </>
-            )}
-
+          {onOpenShareModal && (
             <button
-              id="btn-reset-tasks"
-              disabled={isActionLoading}
-              onClick={onResetTasks}
-              title="全タスクを未処理(PENDING)に戻す"
-              className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+              onClick={onOpenShareModal}
+              title="スマホや別PCから接続するためのQRコードを表示"
+              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-700/60 shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
-              <RefreshCw className="w-4 h-4" />
+              <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
+              <span>📱 端末招待</span>
             </button>
-          </div>
+          )}
         </div>
       </div>
     </header>

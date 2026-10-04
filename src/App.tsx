@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { ClusterStatus, DbStats, WorkerSlot } from "./types";
+import { ClusterStatus, DbStats } from "./types";
 import { Header } from "./components/Header";
-import { ClusterOverview } from "./components/ClusterOverview";
-import { WorkerFleetGrid } from "./components/WorkerFleetGrid";
-import { TaskQueueManager } from "./components/TaskQueueManager";
-import { EndoExplorer } from "./components/EndoExplorer";
+import { GuiServerView } from "./components/GuiServerView";
+import { GuiWorkerView } from "./components/GuiWorkerView";
 import { BenchmarkChart } from "./components/BenchmarkChart";
-import { LogsViewer } from "./components/LogsViewer";
+import { EndoExplorer } from "./components/EndoExplorer";
 import { CodeInspector } from "./components/CodeInspector";
+import { ShareDeviceModal } from "./components/ShareDeviceModal";
 
 const defaultDbStats: DbStats = {
   exists: true,
@@ -25,12 +24,24 @@ export default function App() {
     db_stats: defaultDbStats,
     active_workers_count: 0,
     workers: [],
+    web_workers: [],
     updated_at: "",
     uptime_seconds: 0,
   });
 
   const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"cluster" | "tasks" | "benchmark" | "endo" | "logs" | "code">("cluster");
+  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"server" | "worker" | "benchmark" | "endo" | "code">(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      if (tabParam === "worker" || tabParam === "web-worker") return "worker";
+      if (tabParam === "benchmark") return "benchmark";
+      if (tabParam === "endo") return "endo";
+      if (tabParam === "code") return "code";
+    }
+    return "server";
+  });
 
   const fetchStatus = async () => {
     try {
@@ -46,15 +57,40 @@ export default function App() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 1500);
-    return () => clearInterval(interval);
+
+    let intervalId: any = null;
+    const startPolling = (ms: number) => {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(() => {
+        if (!document.hidden) {
+          fetchStatus();
+        }
+      }, ms);
+    };
+
+    startPolling(2000);
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchStatus();
+        startPolling(2000);
+      } else {
+        startPolling(10000);
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   const handleStartServer = async () => {
     setIsActionLoading(true);
     try {
       await fetch("/api/cluster/server/start", { method: "POST" });
-      setTimeout(fetchStatus, 500);
+      setTimeout(fetchStatus, 400);
     } catch (e) {
       console.error(e);
     } finally {
@@ -66,77 +102,7 @@ export default function App() {
     setIsActionLoading(true);
     try {
       await fetch("/api/cluster/server/stop", { method: "POST" });
-      setTimeout(fetchStatus, 500);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsActionLoading(false);
-    }
-  };
-
-  const handleSpawnWorkers = async (count: number) => {
-    setIsActionLoading(true);
-    try {
-      await fetch("/api/cluster/worker/spawn", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count }),
-      });
-      setTimeout(fetchStatus, 500);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsActionLoading(false);
-    }
-  };
-
-  const handleSpawnSingleWorker = async (workerId: string) => {
-    try {
-      await fetch("/api/cluster/worker/spawn", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ worker_id: workerId }),
-      });
-      setTimeout(fetchStatus, 500);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleKillWorker = async (workerId: string) => {
-    try {
-      await fetch("/api/cluster/worker/kill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ worker_id: workerId }),
-      });
-      setTimeout(fetchStatus, 500);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleGenerateTasks = async (start: number, end: number, chunkSize: number) => {
-    setIsActionLoading(true);
-    try {
-      await fetch("/api/cluster/tasks/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ range_start: start, range_end: end, chunk_size: chunkSize }),
-      });
-      setTimeout(fetchStatus, 500);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsActionLoading(false);
-    }
-  };
-
-  const handleResetTasks = async () => {
-    setIsActionLoading(true);
-    try {
-      await fetch("/api/cluster/tasks/reset", { method: "POST" });
-      setTimeout(fetchStatus, 500);
+      setTimeout(fetchStatus, 400);
     } catch (e) {
       console.error(e);
     } finally {
@@ -145,152 +111,103 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col font-sans selection:bg-cyan-500 selection:text-white">
-      {/* Top Header */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-black">
+      {/* Top Header Navigation */}
       <Header
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
         serverRunning={status.server_running}
         activeWorkers={status.active_workers_count}
-        totalWorkers={22}
-        onStartServer={handleStartServer}
-        onStopServer={handleStopServer}
-        onSpawnWorkers={handleSpawnWorkers}
-        onResetTasks={handleResetTasks}
-        isActionLoading={isActionLoading}
+        totalWorkers={22 + (status.web_workers?.length || 0)}
+        onOpenShareModal={() => setIsShareModalOpen(true)}
       />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-200 overflow-x-auto no-scrollbar space-x-1 sm:space-x-4 text-xs font-semibold">
-          <button
-            onClick={() => setActiveTab("cluster")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "cluster"
-                ? "border-cyan-600 text-cyan-700"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            クラスタ監視 &amp; ワーカー22台
-          </button>
-          <button
-            onClick={() => setActiveTab("tasks")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "tasks"
-                ? "border-cyan-600 text-cyan-700"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            タスク管理 (SQLite DB)
-          </button>
-          <button
-            onClick={() => setActiveTab("benchmark")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "benchmark"
-                ? "border-indigo-600 text-indigo-700 font-bold"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            📊 処理時間グラフ分析
-          </button>
-          <button
-            onClick={() => setActiveTab("endo")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "endo"
-                ? "border-cyan-600 text-cyan-700"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            φ⁻¹(n) 単体計算 (Endo_method)
-          </button>
-          <button
-            onClick={() => setActiveTab("logs")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "logs"
-                ? "border-cyan-600 text-cyan-700"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            動作ログ (server/worker.log)
-          </button>
-          <button
-            onClick={() => setActiveTab("code")}
-            className={`pb-3 px-2 border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === "code"
-                ? "border-cyan-600 text-cyan-700"
-                : "border-transparent text-slate-500 hover:text-slate-900"
-            }`}
-          >
-            配布用コード &amp; LAN展開手順
-          </button>
-        </div>
-
-        {/* Tab 1: Cluster Overview & Worker Fleet */}
-        {activeTab === "cluster" && (
-          <div className="space-y-6">
-            <ClusterOverview
-              stats={status.db_stats || defaultDbStats}
-              uptimeSeconds={status.uptime_seconds}
-              activeWorkers={status.active_workers_count}
-            />
-
-            <WorkerFleetGrid
-              workers={status.workers}
-              serverRunning={status.server_running}
-              onSpawnWorker={handleSpawnSingleWorker}
-              onKillWorker={handleKillWorker}
-            />
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <EndoExplorer />
-              <LogsViewer />
-            </div>
-          </div>
+      {/* Main Viewport Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5">
+        {/* Mode 1: 🖥️ 親サーバー (gui_server.py と同一構成) */}
+        {activeTab === "server" && (
+          <GuiServerView
+            status={status}
+            isActionLoading={isActionLoading}
+            onStartServer={handleStartServer}
+            onStopServer={handleStopServer}
+            onOpenShareModal={() => setIsShareModalOpen(true)}
+            onOpenBenchmark={() => setActiveTab("benchmark")}
+            onRefresh={fetchStatus}
+          />
         )}
 
-        {/* Tab 2: Tasks Manager */}
-        {activeTab === "tasks" && (
-          <div className="space-y-6">
-            <ClusterOverview
-              stats={status.db_stats || defaultDbStats}
-              uptimeSeconds={status.uptime_seconds}
-              activeWorkers={status.active_workers_count}
-            />
-            <TaskQueueManager
-              onGenerateTasks={handleGenerateTasks}
-              isGenerating={isActionLoading}
-            />
-          </div>
+        {/* Mode 2: ⚡ ワーカーPC (gui_worker.py と同一構成) */}
+        {activeTab === "worker" && (
+          <GuiWorkerView
+            onOpenShareModal={() => setIsShareModalOpen(true)}
+          />
         )}
 
-        {/* Tab 2.5: Benchmark Chart */}
+        {/* Mode 3: 📊 処理時間グラフ分析 */}
         {activeTab === "benchmark" && (
-          <div className="space-y-6">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-100">
+                📊 処理時間グラフ分析 (plot_benchmark)
+              </h2>
+              <button
+                onClick={() => setActiveTab("server")}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-semibold cursor-pointer"
+              >
+                ← 親サーバー画面に戻る
+              </button>
+            </div>
             <BenchmarkChart />
           </div>
         )}
 
-        {/* Tab 3: Endo_method Explorer */}
+        {/* Mode 4: 🧮 φ⁻¹(n) 単体検算 */}
         {activeTab === "endo" && (
-          <div className="space-y-6">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-100">
+                🧮 φ⁻¹(n) 単体計算 (Endo Method)
+              </h2>
+              <button
+                onClick={() => setActiveTab("server")}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-semibold cursor-pointer"
+              >
+                ← 親サーバー画面に戻る
+              </button>
+            </div>
             <EndoExplorer />
-            <CodeInspector />
           </div>
         )}
 
-        {/* Tab 4: Logs */}
-        {activeTab === "logs" && (
-          <div className="space-y-6">
-            <LogsViewer />
-          </div>
-        )}
-
-        {/* Tab 5: Code & Deployment */}
+        {/* Mode 5: 📖 配布用コード & LAN展開手順 */}
         {activeTab === "code" && (
-          <div className="space-y-6">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-100">
+                📖 配布用コード &amp; LAN展開手順
+              </h2>
+              <button
+                onClick={() => setActiveTab("server")}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-xs font-semibold cursor-pointer"
+              >
+                ← 親サーバー画面に戻る
+              </button>
+            </div>
             <CodeInspector />
           </div>
         )}
       </main>
+
+      {/* Share / Invite other devices Modal */}
+      <ShareDeviceModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        onOpenWebWorkerDirectly={() => {
+          setIsShareModalOpen(false);
+          setActiveTab("worker");
+        }}
+      />
     </div>
   );
 }

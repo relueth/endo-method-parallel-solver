@@ -1,172 +1,356 @@
 import React, { useState, useEffect } from "react";
-import { Code2, Copy, Check, FileText, Terminal } from "lucide-react";
+import {
+  Code2,
+  Copy,
+  Check,
+  Globe,
+  Terminal,
+  Server,
+  Zap,
+  ShieldCheck,
+  CheckCircle2,
+  ExternalLink,
+  Laptop,
+  FolderOpen,
+  ArrowRight,
+} from "lucide-react";
 
 export const CodeInspector: React.FC = () => {
-  const [selectedFile, setSelectedFile] = useState<string>("Endo_method.py");
-  const [content, setContent] = useState<string>("");
-  const [loading, setLoading] = useState<boolean>(false);
-  const [copied, setCopied] = useState<boolean>(false);
+  const [activeSection, setActiveSection] = useState<"tunnel" | "lan_python">("tunnel");
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const files = [
-    { name: "gui_launcher.py", label: "gui_launcher.py (★ダブルクリック起動ランチャー)" },
-    { name: "gui_server.py", label: "gui_server.py (親サーバー GUI画面)" },
-    { name: "gui_worker.py", label: "gui_worker.py (ワーカーPC GUI画面)" },
-    { name: "gui_launcher.pyw", label: "gui_launcher.pyw (黒い画面なしWin起動)" },
-    { name: "Endo_method.py", label: "Endo_method.py (計算コア)" },
-    { name: "server.py", label: "server.py (親サーバーCUI)" },
-    { name: "worker.py", label: "worker.py (ワーカーPC CUI)" },
-    { name: "config.json", label: "config.json (設定)" },
-    { name: "README.md", label: "README.md (マニュアル)" },
-  ];
-
-  const fetchFile = async (file: string) => {
-    setLoading(true);
-    setSelectedFile(file);
-    try {
-      const res = await fetch(`/api/files/view?file=${file}`);
-      if (res.ok) {
-        const data = await res.json();
-        setContent(data.content);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+  const handleCopy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2500);
   };
 
-  useEffect(() => {
-    fetchFile(selectedFile);
-  }, []);
+  const batchCode = `@echo off
+chcp 65001 > nul
+title [親サーバー & Cloudflare Tunnel] 分散計算システム起動ランチャー
+color 0b
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+echo =====================================================================
+echo    φ(x)=n オイラー関数逆像求解 分散計算システム
+echo    Windows 親サーバー ＆ Cloudflare Tunnel 世界公開ランチャー
+echo =====================================================================
+echo.
+
+:: 1. Node.js のチェック
+where node >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [エラー] Node.js が見つかりません。
+    echo 以下のコマンドでインストールするか、https://nodejs.org/ から導入してください:
+    echo    winget install OpenJS.NodeJS.LTS
+    echo.
+    pause
+    exit /b 1
+)
+
+:: 2. 依存ライブラリのインストール確認
+if not exist node_modules (
+    echo [1/3] 初回起動のため、ライブラリをインストールしています (npm install)...
+    call npm install
+    if %errorlevel% neq 0 (
+        echo [エラー] npm install に失敗しました。
+        pause
+        exit /b 1
+    )
+)
+
+:: 3. Cloudflare cloudflared のチェック
+where cloudflared >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [2/3] Cloudflare Tunnel (cloudflared) をインストールしています...
+    winget install --id Cloudflare.cloudflared --accept-package-agreements --accept-source-agreements
+)
+
+echo [3/3] 親サーバー (localhost:3000) を別ウィンドウで起動します...
+start "Node.js 親サーバー (:3000)" cmd /k "npm run dev"
+
+echo.
+echo サーバーの立ち上がりを待機しています (約5秒)...
+timeout /t 5 > nul
+
+echo.
+echo =====================================================================
+echo    Cloudflare Tunnel を開始し、世界中からアクセス可能なURLを発行します
+echo =====================================================================
+echo.
+echo ※ 画面に「https://xxxx.trycloudflare.com」というURLが表示されます。
+echo    そのURLをスマホのブラウザで開くか、QRコード化して読み取ってください。
+echo.
+
+cloudflared tunnel --url http://localhost:3000
+pause`;
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-4 border-b border-slate-100">
+    <section className="bg-slate-900 rounded-xl border border-slate-800 p-6 shadow-xl text-slate-100 space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <div className="flex items-center space-x-2">
-            <Code2 className="w-4 h-4 text-cyan-600" />
-            <h2 className="text-sm font-bold text-slate-900 tracking-wide uppercase">
-              配布用ソースコード (parallel/ ディレクトリ)
+            <Server className="w-5 h-5 text-cyan-400" />
+            <h2 className="text-base font-bold text-slate-100 tracking-wide uppercase">
+              配布用コード &amp; Windows世界公開マニュアル
             </h2>
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            実環境のLAN内各PC (親サーバー1台 + ワーカー22台) にそのまま配置して動作する完成コード
+          <p className="text-xs text-slate-400 mt-1">
+            ご自身のWindows PCを親サーバーにして、Cloudflare Tunnel経由で世界中から安全にアクセスできるようにする設定手順
           </p>
         </div>
 
-        {/* Copy code button */}
-        <button
-          onClick={handleCopy}
-          className="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 mr-1.5 text-emerald-600" />
-              コピーしました
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5 mr-1.5 text-slate-500" />
-              ファイル内容をコピー
-            </>
-          )}
-        </button>
-      </div>
-
-      {/* File Tabs */}
-      <div className="flex flex-wrap gap-1.5 mb-3">
-        {files.map((f) => (
+        {/* Section Switcher Tabs */}
+        <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
           <button
-            key={f.name}
-            onClick={() => fetchFile(f.name)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium transition-colors ${
-              selectedFile === f.name
-                ? "bg-slate-900 text-white shadow-xs"
-                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            onClick={() => setActiveSection("tunnel")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+              activeSection === "tunnel"
+                ? "bg-cyan-500 text-slate-950 font-bold shadow-xs"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            {f.label}
+            <Globe className="w-3.5 h-3.5" />
+            Windows世界公開 (Cloudflare)
           </button>
-        ))}
+          <button
+            onClick={() => setActiveSection("lan_python")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+              activeSection === "lan_python"
+                ? "bg-cyan-500 text-slate-950 font-bold shadow-xs"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Laptop className="w-3.5 h-3.5" />
+            物理LAN内 PCクラスタ (Python GUI)
+          </button>
+        </div>
       </div>
 
-      {/* Code Container */}
-      <div className="relative">
-        <pre className="bg-slate-900 text-slate-100 p-4 rounded-lg font-mono text-xs leading-relaxed max-h-80 overflow-y-auto overflow-x-auto border border-slate-800">
-          {loading ? "読み込み中..." : content}
-        </pre>
-      </div>
-
-      {/* Quick Run Commands Box */}
-      <div className="mt-4 p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-3">
-        <div>
-          <div className="flex items-center space-x-1.5 font-semibold text-slate-800 mb-2">
-            <Terminal className="w-3.5 h-3.5 text-cyan-600" />
-            <span className="text-cyan-800 font-bold">✨ bat不要！Python ファイルを直接ダブルクリックするだけでGUI起動</span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 font-mono text-[11px]">
-            <div className="p-2.5 bg-indigo-50/80 rounded-lg border border-indigo-200 col-span-1 md:col-span-2">
-              <span className="text-indigo-950 block text-[11px] font-sans font-bold mb-1">
-                ★ 一番おすすめ: 統合ランチャー (エクスプローラーからダブルクリックするだけ)
-              </span>
-              <div className="flex items-center space-x-2">
-                <code className="text-indigo-700 font-bold bg-white px-2 py-1 rounded border border-indigo-300 inline-block text-xs">gui_launcher.py</code>
-                <span className="text-slate-500 font-sans text-[11px]">または (黒い画面を出さない)</span>
-                <code className="text-indigo-700 font-bold bg-white px-2 py-1 rounded border border-indigo-300 inline-block text-xs">gui_launcher.pyw</code>
+      {/* SECTION 1: Cloudflare Tunnel Guide */}
+      {activeSection === "tunnel" && (
+        <div className="space-y-6">
+          {/* Key Advantages Alert */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="p-3.5 rounded-xl bg-cyan-950/40 border border-cyan-800/60 flex items-start gap-3">
+              <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-xs font-bold text-cyan-200">ポート開放一切不要</h4>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  ルーターの穴あけが不要なため、自宅のIPアドレスが晒されずサイバー攻撃を受けません。
+                </p>
               </div>
-              <p className="text-[11px] text-indigo-900 font-sans mt-1.5 leading-relaxed">
-                Smart App Controlで .bat がブロックされる環境でも、Pythonファイルならダブルクリックでそのまま起動します。起動後に「親サーバー」か「ワーカー」か選ぶだけでGUI画面が開きます。
-              </p>
             </div>
-            <div className="p-2.5 bg-emerald-50/70 rounded-lg border border-emerald-200">
-              <span className="text-emerald-900 block text-[11px] font-sans font-bold mb-1">
-                親サーバー GUI 直接起動 (タスク生成・進捗バー・ワーカー監視)
-              </span>
-              <code className="text-emerald-700 font-bold bg-white px-2 py-0.5 rounded border border-emerald-300 inline-block">gui_server.py</code>
-              <span className="text-slate-500 text-[10px] font-sans ml-1">/ <code className="text-slate-700">gui_server.pyw</code></span>
-              <p className="text-[10px] text-emerald-800 font-sans mt-1">
-                このPCのIPv4アドレスを自動検知して大きく表示。タスク範囲設定や再生成、ワーカーの状況をマウスで操作できます。
-              </p>
-            </div>
-            <div className="p-2.5 bg-cyan-50/70 rounded-lg border border-cyan-200">
-              <span className="text-cyan-900 block text-[11px] font-sans font-bold mb-1">
-                ワーカーPC GUI 直接起動 (ワンクリック接続・リアルタイム計算)
-              </span>
-              <code className="text-cyan-700 font-bold bg-white px-2 py-0.5 rounded border border-cyan-300 inline-block">gui_worker.py</code>
-              <span className="text-slate-500 text-[10px] font-sans ml-1">/ <code className="text-slate-700">gui_worker.pyw</code></span>
-              <p className="text-[10px] text-cyan-800 font-sans mt-1">
-                PC名と親PCのIPを入力して「接続して計算開始」ボタンを押すだけ。リアルタイムで計算した解の数や進捗が表示されます。
-              </p>
-            </div>
-          </div>
-        </div>
 
-        <div>
-          <div className="flex items-center space-x-1.5 font-semibold text-slate-700 mb-1.5 text-[11px]">
-            <span>コマンドプロンプト / PowerShell / Mac / Linux 手動実行 (CUI):</span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 font-mono text-[11px]">
-            <div className="p-2 bg-white rounded border border-slate-200">
-              <span className="text-slate-400 block text-[10px] uppercase font-sans">
-                親サーバー (CUI)
-              </span>
-              <code className="text-slate-800">python server.py --host 0.0.0.0 --port 5000</code>
+            <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 flex items-start gap-3">
+              <Zap className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-xs font-bold text-emerald-200">アカウント登録不要（即時）</h4>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  Quick Tunnel 機能により、コマンド1行でランダムなHTTPSドメインが即座に割り当てられます。
+                </p>
+              </div>
             </div>
-            <div className="p-2 bg-white rounded border border-slate-200">
-              <span className="text-slate-400 block text-[10px] uppercase font-sans">
-                各ワーカー (CUI)
-              </span>
-              <code className="text-slate-800">python worker.py --id PC01 --server 192.168.1.100</code>
+
+            <div className="p-3.5 rounded-xl bg-indigo-950/40 border border-indigo-800/60 flex items-start gap-3">
+              <Globe className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-xs font-bold text-indigo-200">WebSocket / Web Worker完全対応</h4>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  ブラウザワーカーの常時双方向通信（/ws/worker）もそのまま安定して中継されます。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Step by Step Walkthrough */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-cyan-400" />
+              Windows PC でのセットアップ手順（最短3ステップ）
+            </h3>
+
+            {/* Step 1 */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-cyan-300 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-400 flex items-center justify-center text-[11px]">
+                    1
+                  </span>
+                  必要なツールをインストール (PowerShell / コマンドプロンプト)
+                </span>
+                <button
+                  onClick={() =>
+                    handleCopy(
+                      "winget install OpenJS.NodeJS.LTS Cloudflare.cloudflared Python.Python.3.11",
+                      "step1"
+                    )
+                  }
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-cyan-300 transition-colors"
+                >
+                  {copiedKey === "step1" ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  {copiedKey === "step1" ? "コピー済" : "コマンドをコピー"}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400">
+                Windows 10/11 の PowerShell または コマンドプロンプトを開き、下記を貼り付けて実行します：
+              </p>
+              <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-cyan-300 overflow-x-auto select-all">
+                winget install OpenJS.NodeJS.LTS Cloudflare.cloudflared Python.Python.3.11
+              </pre>
+              <p className="text-[11px] text-slate-500">
+                ※ 既にNode.jsやPythonが入っている場合はスキップできます。
+              </p>
+            </div>
+
+            {/* Step 2 */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-cyan-300 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-400 flex items-center justify-center text-[11px]">
+                    2
+                  </span>
+                  プロジェクトの起動 (親サーバー)
+                </span>
+                <button
+                  onClick={() => handleCopy("npm install --legacy-peer-deps; npm run dev", "step2")}
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-cyan-300 transition-colors"
+                >
+                  {copiedKey === "step2" ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  {copiedKey === "step2" ? "コピー済" : "コマンドをコピー"}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400">
+                本アプリのフォルダ内でターミナルを開き、サーバーを立ち上げます（ポート3000）：
+              </p>
+              <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-cyan-300 overflow-x-auto select-all">
+                npm install --legacy-peer-deps; npm run dev
+              </pre>
+            </div>
+
+            {/* Step 3 */}
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-cyan-300 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-400 flex items-center justify-center text-[11px]">
+                    3
+                  </span>
+                  Cloudflare Tunnel を起動して世界公開URLを発行
+                </span>
+                <button
+                  onClick={() =>
+                    handleCopy("cloudflared tunnel --url http://localhost:3000", "step3")
+                  }
+                  className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-cyan-300 transition-colors"
+                >
+                  {copiedKey === "step3" ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  {copiedKey === "step3" ? "コピー済" : "コマンドをコピー"}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400">
+                別のターミナルウィンドウを開き、以下の1行を実行します：
+              </p>
+              <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400 overflow-x-auto select-all">
+                cloudflared tunnel --url http://localhost:3000
+              </pre>
+              <div className="p-3 bg-slate-900/80 rounded-lg border border-slate-800 text-xs text-slate-300 space-y-1">
+                <p className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  実行すると画面に以下のようなURLが表示されます：
+                </p>
+                <p className="font-mono text-cyan-300 text-[11px] bg-slate-950 p-1.5 rounded">
+                  +--------------------------------------------------------------------------------------------+
+                  <br />
+                  | Your quick Tunnel has been created! Visit it at:
+                  <br />
+                  | https://random-subdomain-1234.trycloudflare.com
+                  <br />
+                  +--------------------------------------------------------------------------------------------+
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  このURLをスマホや外出先のPCで開けば、世界中どこからでも親サーバーに接続して分散計算に参加できます！
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Option: Double-Click Batch File */}
+          <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-700/60 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-indigo-400" />
+                <h4 className="text-xs font-bold text-indigo-200">
+                  ★ 最も簡単：ダブルクリック自動起動バッチファイル
+                </h4>
+              </div>
+              <button
+                onClick={() => handleCopy(batchCode, "batch")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors shrink-0 cursor-pointer shadow-xs"
+              >
+                {copiedKey === "batch" ? (
+                  <Check className="w-3.5 h-3.5" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                {copiedKey === "batch" ? "バッチ内容をコピー済" : "start-cluster.bat をコピー"}
+              </button>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              プロジェクト直下に <code className="text-cyan-300 font-mono font-bold">start-cluster.bat</code> という名前で保存してダブルクリックするだけで、Node.js親サーバーとCloudflare Tunnelを自動で一括起動します。
+            </p>
+            <pre className="p-3 bg-slate-950 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-300 max-h-48 overflow-y-auto leading-relaxed">
+              {batchCode}
+            </pre>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 2: LAN Python GUI cluster */}
+      {activeSection === "lan_python" && (
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+            <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+              <Laptop className="w-4 h-4 text-cyan-400" />
+              物理LAN内PC（学校・研究室・オフィスのPCクラスタ）での運用
+            </h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              ブラウザ版だけでなく、WindowsのネイティブPython GUI（Tkinter）を使ったPC22台クラスタ構成もそのまま動かせます。Smart App Control等でbatが弾かれる環境でも直接ダブルクリック起動できます。
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-2">
+              <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span className="font-bold text-cyan-300 block mb-1">
+                  1. gui_launcher.py (統合ランチャー)
+                </span>
+                <p className="text-slate-400 text-[11px]">
+                  エクスプローラーからダブルクリックで起動。「親サーバー」「ワーカー」を選択するだけで自動起動します。
+                </p>
+              </div>
+
+              <div className="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span className="font-bold text-emerald-300 block mb-1">
+                  2. gui_server.py (親サーバーGUI)
+                </span>
+                <p className="text-slate-400 text-[11px]">
+                  PCのIPアドレスを自動検出して画面上部に大写し。タスク再生成やワーカー接続台数をリアルタイム表示。
+                </p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </section>
   );
 };

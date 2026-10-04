@@ -2,7 +2,7 @@ import os
 import sys
 import time
 
-# sympy が未インストールの場合は自動インストール
+# sympy が未インストールの場合は自動インストール、利用不能な場合は組込shimを使用
 try:
     import sympy as sy
 except ImportError:
@@ -11,9 +11,54 @@ except ImportError:
         ensure_package("sympy", "sympy")
         import sympy as sy
     except Exception:
-        import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "sympy"], check=True)
-        import sympy as sy
+        try:
+            import subprocess
+            subprocess.run([sys.executable, "-m", "pip", "install", "sympy"], check=True)
+            import sympy as sy
+        except Exception:
+            class _MathShim:
+                @staticmethod
+                def isprime(n: int) -> bool:
+                    if n < 2:
+                        return False
+                    if n in (2, 3):
+                        return True
+                    if n % 2 == 0 or n % 3 == 0:
+                        return False
+                    d = 5
+                    while d * d <= n:
+                        if n % d == 0 or n % (d + 2) == 0:
+                            return False
+                        d += 6
+                    return True
+
+                @staticmethod
+                def factorint(n: int) -> dict:
+                    factors = {}
+                    d = 2
+                    while d * d <= n:
+                        while n % d == 0:
+                            factors[d] = factors.get(d, 0) + 1
+                            n //= d
+                        d = 3 if d == 2 else d + 2
+                    if n > 1:
+                        factors[n] = factors.get(n, 0) + 1
+                    return factors
+
+                @staticmethod
+                def divisors(n: int) -> list:
+                    divs = []
+                    d = 1
+                    while d * d <= n:
+                        if n % d == 0:
+                            divs.append(d)
+                            if d * d != n:
+                                divs.append(n // d)
+                        d += 1
+                    divs.sort()
+                    return divs
+
+            sy = _MathShim()
 
 
 from functools import lru_cache

@@ -68,7 +68,10 @@ class TaskManager:
         self.init_db()
 
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA busy_timeout = 10000;")
         conn.row_factory = sqlite3.Row
         return conn
 

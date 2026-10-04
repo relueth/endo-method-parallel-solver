@@ -1,0 +1,6 @@
+{
+  "summary":  "Windows PCを親サーバーとして起動し、Cloudflare Tunnelを用いて世界中（外部インターネット）から安全かつポート開放不要でアクセス可能にするための完全構築手順、自動起動スクリプト、およびWebコンソール内の専用ガイド機能の実装計画です。",
+  "updatedAt":  "2026-10-03T03:26:22.746573034Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

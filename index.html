@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,10 +9,46 @@
     <meta property="og:description" content="親サーバー1台・最大22台のワーカーPCによるLAN並列分散計算システム。Endo_methodを用いてオイラーのトーシェント関数逆像 φ⁻¹(n) を高速分散算出。" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <!-- React Fast Refresh Preamble Shim for Vite Middleware & Tunnel Access -->
+    <script>
+      window.__vite_plugin_react_preamble_installed__ = true;
+      window.$RefreshReg$ = () => {};
+      window.$RefreshSig$ = () => (type) => type;
+
+      // Prevent Vite Dev Server HMR from spamming :24678 connection errors over Cloudflare Tunnel
+      (function() {
+        if (typeof window !== "undefined" && window.WebSocket) {
+          const NativeWebSocket = window.WebSocket;
+          window.WebSocket = function(url, protocols) {
+            const urlStr = String(url || "");
+            if (urlStr.includes(":24678") || (urlStr.includes("token=") && urlStr.includes("trycloudflare.com"))) {
+              const dummy = {
+                readyState: 3, // CLOSED
+                send: () => {},
+                close: () => {},
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => false,
+                set onopen(fn) {},
+                set onclose(fn) {},
+                set onerror(fn) {},
+                set onmessage(fn) {},
+              };
+              return dummy;
+            }
+            return new NativeWebSocket(url, protocols);
+          };
+          window.WebSocket.prototype = NativeWebSocket.prototype;
+          window.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+          window.WebSocket.OPEN = NativeWebSocket.OPEN;
+          window.WebSocket.CLOSING = NativeWebSocket.CLOSING;
+          window.WebSocket.CLOSED = NativeWebSocket.CLOSED;
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
