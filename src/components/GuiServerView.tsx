@@ -18,8 +18,10 @@ import {
   CheckCircle2,
   AlertCircle,
   HelpCircle,
+  Globe,
 } from "lucide-react";
 import { ClusterStatus, WorkerSlot, WebWorkerSlot } from "../types";
+import { CustomDomainGuideModal } from "./CustomDomainGuideModal";
 
 interface GuiServerViewProps {
   status: ClusterStatus;
@@ -58,6 +60,7 @@ export const GuiServerView: React.FC<GuiServerViewProps> = ({
 
   // Results modal / files
   const [showResultsModal, setShowResultsModal] = useState<boolean>(false);
+  const [showCustomDomainGuide, setShowCustomDomainGuide] = useState<boolean>(false);
   const [resultsData, setResultsData] = useState<{
     folder_path: string;
     database_path: string;
@@ -523,6 +526,14 @@ export const GuiServerView: React.FC<GuiServerViewProps> = ({
                   <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
                   <span>📱 接続案内・QR</span>
                 </button>
+                <button
+                  onClick={() => setShowCustomDomainGuide(true)}
+                  title="Cloudflare Tunnelを使って自分の独自ドメインで固定公開する全手順"
+                  className="px-3 py-1.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>🌐 独自ドメイン固定設定</span>
+                </button>
               </div>
 
               {/* URL解説・案内バー */}
@@ -536,7 +547,10 @@ export const GuiServerView: React.FC<GuiServerViewProps> = ({
                     <span className="text-slate-300 font-medium">現在表示中のURL:</span> ブラウザで開いている現在の接続先です（AI Studioクラウド環境、自前PC localhost、またはTunnelのいずれか）。
                   </li>
                   <li>
-                    <span className="text-slate-300 font-medium">Cloudflare Tunnel（<code>https://*.trycloudflare.com</code>）:</span> Windows PCで <code className="text-cyan-300 bg-slate-900 px-1 py-0.5 rounded">start-server-and-tunnel.bat</code> を起動すると、黒い画面に自動発行されます。そのURLをブラウザで開くと、この表示も自動でそのアドレスになります。
+                    <span className="text-slate-300 font-medium">一時URL（<code>*.trycloudflare.com</code>）:</span> Windows PCで <code className="text-cyan-300 bg-slate-900 px-1 py-0.5 rounded">start-server-and-tunnel.bat</code> を起動すると自動発行されます。
+                  </li>
+                  <li>
+                    <span className="text-indigo-300 font-medium">独自ドメイン固定公開（推奨）:</span> <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">start-server-and-custom-tunnel.bat</code> を使うと、取得した固定ドメイン（例: <code>cluster.yourdomain.com</code>）で常に同じURLのままワーカーを自動再接続できます。右上の「🌐 独自ドメイン固定設定」から設定ガイドをご覧いただけます。
                   </li>
                   {status.lan_ips && status.lan_ips.length > 0 && (
                     <li>
@@ -1222,6 +1236,12 @@ export const GuiServerView: React.FC<GuiServerViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* 独自ドメイン固定設定ガイドモーダル */}
+      <CustomDomainGuideModal
+        isOpen={showCustomDomainGuide}
+        onClose={() => setShowCustomDomainGuide(false)}
+      />
     </div>
   );
 };

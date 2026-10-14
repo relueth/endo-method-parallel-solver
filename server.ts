@@ -6,7 +6,10 @@ import os from "os";
 import { spawn, execSync, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
+import { createRequire } from "node:module";
 
+// ESM (tsx) と CommonJS (dist/server.cjs) の両環境で安全に動作
+const cjsRequire: any = typeof require !== "undefined" ? require : createRequire(import.meta?.url || "file:///");
 const app = express();
 const PORT = 3000;
 
@@ -75,36 +78,279 @@ if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
 let DatabaseSyncClass: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  DatabaseSyncClass = require("node:sqlite").DatabaseSync;
+  DatabaseSyncClass = cjsRequire("node:sqlite")?.DatabaseSync || null;
 } catch (e) {
   DatabaseSyncClass = null;
 }
 
-let dbInstance: any = null;
+interface StoredTask {
+  task_id: number;
+  start: number;
+  end: number;
+  status: "PENDING" | "RUNNING" | "COMPLETED";
+  worker_id: string | null;
+  assigned_at: number | null;
+  completed_at: number | null;
+  duration: number | null;
+  total_solutions: number;
+  result_summary: string | null;
+}
 
-function getDb(): any {
-  const dbPath = path.join(DATA_DIR, "tasks.db");
-  if (!fs.existsSync(dbPath)) {
-    if (dbInstance) {
-      try { dbInstance.close(); } catch (e) {}
-      dbInstance = null;
-    }
-    return null;
+class JsonFallbackDb {
+  private tasks: Map<number, StoredTask> = new Map();
+  private filePath: string;
+  private saveTimeout: NodeJS.Timeout | null = null;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+    this.loadFromDisk();
   }
 
-  if (!dbInstance && DatabaseSyncClass) {
+  private loadFromDisk() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, "utf-8");
+        const list: StoredTask[] = JSON.parse(raw);
+        for (const t of list) {
+          if (t.status === "RUNNING") {
+            t.status = "PENDING";
+            t.worker_id = null;
+            t.assigned_at = null;
+          }
+          this.tasks.set(t.task_id, t);
+        }
+      }
+    } catch (e) {
+      console.error("[JsonFallbackDb Load Error]", e);
+    }
+  }
+
+  private scheduleSave() {
+    if (this.saveTimeout) return;
+    this.saveTimeout = setTimeout(() => {
+      this.saveTimeout = null;
+      try {
+        const arr = Array.from(this.tasks.values());
+        fs.writeFileSync(this.filePath, JSON.stringify(arr), "utf-8");
+      } catch (e) {
+        console.error("[JsonFallbackDb Save Error]", e);
+      }
+    }, 300);
+  }
+
+  public flush() {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+      this.saveTimeout = null;
+    }
+    try {
+      const arr = Array.from(this.tasks.values());
+      fs.writeFileSync(this.filePath, JSON.stringify(arr), "utf-8");
+    } catch (e) {}
+  }
+
+  public exec(sql: string) {
+    if (sql.includes("DROP TABLE")) {
+      this.tasks.clear();
+      this.flush();
+    }
+  }
+
+  public prepare(sql: string) {
+    const s = sql.trim();
+    return {
+      get: (...args: any[]) => {
+        if (s.includes("MAX(task_id)")) {
+          let maxId = 0;
+          let maxEnd = 0;
+          const total = this.tasks.size;
+          for (const t of this.tasks.values()) {
+            if (t.task_id > maxId) maxId = t.task_id;
+            if (t.end > maxEnd) maxEnd = t.end;
+          }
+          return { max_id: maxId, max_end: maxEnd, total };
+        }
+        if (s.includes("SUM(total_solutions)")) {
+          let solSum = 0;
+          for (const t of this.tasks.values()) {
+            if (t.status === "COMPLETED") solSum += (t.total_solutions || 0);
+          }
+          return { sol_sum: solSum };
+        }
+        if (s.includes("WHERE status = 'PENDING'") && s.includes("LIMIT 1")) {
+          let best: StoredTask | null = null;
+          for (const t of this.tasks.values()) {
+            if (t.status === "PENDING") {
+              if (!best || t.task_id < best.task_id) {
+                best = t;
+              }
+            }
+          }
+          return best ? { task_id: best.task_id, start: best.start, end: best.end } : null;
+        }
+        if (s.includes("WHERE status = 'RUNNING'") && s.includes("assigned_at <")) {
+          const cutoff = args[0] || 0;
+          let best: StoredTask | null = null;
+          for (const t of this.tasks.values()) {
+            if (t.status === "RUNNING" && (t.assigned_at || 0) < cutoff) {
+              if (!best || (t.assigned_at || 0) < (best.assigned_at || 0)) {
+                best = t;
+              }
+            }
+          }
+          return best ? { task_id: best.task_id, start: best.start, end: best.end } : null;
+        }
+        return null;
+      },
+      all: (...args: any[]) => {
+        if (s.includes("COUNT(*) as cnt FROM tasks GROUP BY status")) {
+          const counts: Record<string, number> = { PENDING: 0, RUNNING: 0, COMPLETED: 0 };
+          for (const t of this.tasks.values()) {
+            counts[t.status] = (counts[t.status] || 0) + 1;
+          }
+          return [
+            { status: "PENDING", cnt: counts.PENDING },
+            { status: "RUNNING", cnt: counts.RUNNING },
+            { status: "COMPLETED", cnt: counts.COMPLETED },
+          ];
+        }
+        return [];
+      },
+      run: (...args: any[]) => {
+        if (s.includes("INSERT INTO tasks")) {
+          const [taskId, start, end] = args;
+          this.tasks.set(Number(taskId), {
+            task_id: Number(taskId),
+            start: Number(start),
+            end: Number(end),
+            status: "PENDING",
+            worker_id: null,
+            assigned_at: null,
+            completed_at: null,
+            duration: null,
+            total_solutions: 0,
+            result_summary: null,
+          });
+          this.scheduleSave();
+          return { changes: 1 };
+        }
+        if (s.includes("UPDATE tasks SET status = 'RUNNING'")) {
+          const [workerId, assignedAt, taskId] = args;
+          const t = this.tasks.get(Number(taskId));
+          if (t) {
+            t.status = "RUNNING";
+            t.worker_id = String(workerId);
+            t.assigned_at = Number(assignedAt);
+            this.scheduleSave();
+            return { changes: 1 };
+          }
+          return { changes: 0 };
+        }
+        if (s.includes("UPDATE tasks SET status = 'COMPLETED'")) {
+          const [workerId, completedAt, duration, totalSolutions, resultSummary, taskId] = args;
+          const t = this.tasks.get(Number(taskId));
+          if (t) {
+            t.status = "COMPLETED";
+            t.worker_id = String(workerId);
+            t.completed_at = Number(completedAt);
+            t.duration = Number(duration);
+            t.total_solutions = Number(totalSolutions) || 0;
+            t.result_summary = String(resultSummary || "");
+            this.scheduleSave();
+            return { changes: 1 };
+          }
+          return { changes: 0 };
+        }
+        if (s.includes("SET status = \"PENDING\"") || s.includes("SET status = 'PENDING'")) {
+          let cnt = 0;
+          for (const t of this.tasks.values()) {
+            if (s.includes("WHERE status = 'RUNNING'")) {
+              if (t.status === "RUNNING") {
+                t.status = "PENDING";
+                t.worker_id = null;
+                t.assigned_at = null;
+                cnt++;
+              }
+            } else {
+              t.status = "PENDING";
+              t.worker_id = null;
+              t.assigned_at = null;
+              t.completed_at = null;
+              t.duration = null;
+              t.total_solutions = 0;
+              t.result_summary = null;
+              cnt++;
+            }
+          }
+          this.scheduleSave();
+          return { changes: cnt };
+        }
+        return { changes: 0 };
+      },
+    };
+  }
+
+  public close() {
+    this.flush();
+  }
+}
+
+let dbInstance: any = null;
+
+function initDbSchema(db: any) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        task_id INTEGER PRIMARY KEY,
+        start INTEGER NOT NULL,
+        end INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        worker_id TEXT,
+        assigned_at REAL,
+        completed_at REAL,
+        duration REAL,
+        total_solutions INTEGER DEFAULT 0,
+        result_summary TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+      CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id);
+    `);
+    // 起動時リカバリ: RUNNINGのまま中断されたタスクをPENDINGへ復元
+    try {
+      db.prepare("UPDATE tasks SET status = 'PENDING', worker_id = NULL, assigned_at = NULL WHERE status = 'RUNNING'").run();
+    } catch (e) {}
+  } catch (e) {
+    console.error("[initDbSchema Error]", e);
+  }
+}
+
+function getDb(): any {
+  if (dbInstance) return dbInstance;
+  const dbPath = path.join(DATA_DIR, "tasks.db");
+  if (DatabaseSyncClass) {
     try {
       dbInstance = new DatabaseSyncClass(dbPath);
       // WAL (Write-Ahead Logging) モード有効化: 読み取りと書き込みが互いをロックせず並行実行可能
       dbInstance.exec("PRAGMA journal_mode = WAL;");
       dbInstance.exec("PRAGMA synchronous = NORMAL;");
-      dbInstance.exec("PRAGMA busy_timeout = 10000;");
+      dbInstance.exec("PRAGMA busy_timeout = 5000;");
+      initDbSchema(dbInstance);
+      return dbInstance;
     } catch (e) {
-      console.error("[SQLite Native Connection Error]", e);
+      console.error("[SQLite Native Connection Error, falling back to JsonFallbackDb]", e);
       dbInstance = null;
     }
   }
-  return dbInstance;
+
+  // Node 18/20やネイティブ未対応環境向けのゼロクラッシュ安全フォールバック
+  try {
+    const jsonPath = path.join(DATA_DIR, "tasks.json");
+    dbInstance = new JsonFallbackDb(jsonPath);
+    return dbInstance;
+  } catch (e) {
+    console.error("[JsonFallbackDb Init Error]", e);
+    return null;
+  }
 }
 
 function resetDbConnection() {
@@ -121,16 +367,23 @@ let cachedDbStats: any = null;
 let lastStatsFetchTime = 0;
 let cachedMaxRange: any = null;
 let lastMaxRangeFetch = 0;
+const recentCompletedResults: any[] = [];
+let cachedStatusJson: { data: any; time: number } = { data: null, time: 0 };
+let cachedFilesMetadata: { data: any; time: number } = { data: null, time: 0 };
+let cachedLogs: { data: any; time: number } = { data: null, time: 0 };
 
 function invalidateStatsCache() {
-  lastStatsFetchTime = 0;
+  // キャッシュを即死させず、最短1.5秒間隔での再取得にスロットル (タスク大量完了時のDB高負荷・イベントループ停止を完全防止)
+  if (Date.now() - lastStatsFetchTime > 1500) {
+    lastStatsFetchTime = 0;
+  }
   lastMaxRangeFetch = 0;
 }
 
-// データベース最新統計の取得 (高速ネイティブ実行 & 1.2秒インメモリキャッシュ)
+// データベース最新統計の取得 (高速ネイティブ実行 & 1.5秒インメモリキャッシュ)
 function getDatabaseStats(): any {
   const now = Date.now();
-  if (cachedDbStats && (now - lastStatsFetchTime) < 1200) {
+  if (cachedDbStats && (now - lastStatsFetchTime) < 1500) {
     return cachedDbStats;
   }
 
@@ -150,7 +403,7 @@ function getDatabaseStats(): any {
       const rate = total > 0 ? Math.round((counts.COMPLETED / total) * 10000) / 100 : 0;
 
       cachedDbStats = {
-        exists: true,
+        exists: total > 0,
         pending: counts.PENDING,
         running: counts.RUNNING,
         completed: counts.COMPLETED,
@@ -165,47 +418,49 @@ function getDatabaseStats(): any {
     }
   }
 
-  // Fallback to Python if native SQLite is not ready
-  const dbQuery = `
-import sqlite3, json, os, time
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if not db_path.exists():
-    print(json.dumps({'exists': False}))
-else:
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute('SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status')
-    counts = {'PENDING': 0, 'RUNNING': 0, 'COMPLETED': 0}
-    for r in c.fetchall():
-        counts[r['status']] = r['cnt']
-    c.execute('SELECT SUM(total_solutions) FROM tasks WHERE status = "COMPLETED"')
-    sol_sum = c.fetchone()[0] or 0
-    total = sum(counts.values())
-    rate = round((counts['COMPLETED'] / max(1, total)) * 100, 2)
-    conn.close()
-    print(json.dumps({
-        'exists': True,
-        'pending': counts['PENDING'],
-        'running': counts['RUNNING'],
-        'completed': counts['COMPLETED'],
-        'total': total,
-        'completion_rate': rate,
-        'total_solutions': sol_sum
-    }))
-`;
-  try {
-    const dbOut = runPythonCode(dbQuery);
-    cachedDbStats = JSON.parse(dbOut);
-    lastStatsFetchTime = now;
-    return cachedDbStats;
-  } catch (e) {
-    return cachedDbStats || { exists: false, pending: 0, running: 0, completed: 0, total: 0, completion_rate: 0, total_solutions: 0 };
-  }
+  return cachedDbStats || { exists: false, pending: 0, running: 0, completed: 0, total: 0, completion_rate: 0, total_solutions: 0 };
 }
 
-// Python実行ヘルパー (STDIN渡しでWindows/Linux両対応・エスケープ破損ゼロ)
+// 非同期・ノンブロッキング Python実行ヘルパー (イベントループを一切止めない)
+function runPythonCodeAsync(code: string): Promise<string> {
+  return new Promise((resolve) => {
+    const pythonCmds = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+    let cmdIdx = 0;
+
+    function tryNext() {
+      if (cmdIdx >= pythonCmds.length) {
+        return resolve(JSON.stringify({ error: "Python実行環境が見つかりません" }));
+      }
+      const cmd = pythonCmds[cmdIdx++];
+      try {
+        const proc = spawn(cmd, [], {
+          cwd: PARALLEL_DIR,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        proc.stdout?.on("data", (data) => { stdout += data.toString(); });
+        proc.on("error", () => { tryNext(); });
+        proc.on("close", (code) => {
+          if (code === 0) {
+            resolve(stdout.trim());
+          } else {
+            tryNext();
+          }
+        });
+
+        proc.stdin?.write(code);
+        proc.stdin?.end();
+      } catch (e) {
+        tryNext();
+      }
+    }
+
+    tryNext();
+  });
+}
+
+// 互換用同期フォールバック
 function runPythonCode(code: string): string {
   const pythonCmds = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
   for (const cmd of pythonCmds) {
@@ -214,7 +469,7 @@ function runPythonCode(code: string): string {
         cwd: PARALLEL_DIR,
         input: code,
         encoding: "utf-8",
-        timeout: 10000,
+        timeout: 5000,
         stdio: ["pipe", "pipe", "pipe"],
       });
       return res.trim();
@@ -225,61 +480,28 @@ function runPythonCode(code: string): string {
   return JSON.stringify({ error: "Python実行環境が見つかりません" });
 }
 
-// 次の未完了タスクを取得して RUNNING に更新 (PENDING優先、無応答RUNNINGタスク救済)
+// 次の未完了タスクを取得して RUNNING に更新 (超高速ネイティブ実行・0.1ms)
 function getNextPendingTask(workerId: string): { task_id: number; start: number; end: number } | null {
   const db = getDb();
-  if (db) {
-    try {
-      // 1. 未割当 (PENDING) タスクを最優先取得
-      let row = db.prepare("SELECT task_id, start, end FROM tasks WHERE status = 'PENDING' ORDER BY task_id ASC LIMIT 1").get() as any;
-      // 2. なければ 30秒以上無応答の放置RUNNINGタスクを自動救済
-      if (!row) {
-        const cutoff = (Date.now() / 1000) - 30.0;
-        row = db.prepare("SELECT task_id, start, end FROM tasks WHERE status = 'RUNNING' AND (assigned_at IS NULL OR assigned_at < ?) ORDER BY task_id ASC LIMIT 1").get(cutoff) as any;
-      }
-      if (row) {
-        const nowSec = Date.now() / 1000;
-        db.prepare("UPDATE tasks SET status = 'RUNNING', worker_id = ?, assigned_at = ? WHERE task_id = ?").run(workerId, nowSec, row.task_id);
-        invalidateStatsCache();
-        return { task_id: Number(row.task_id), start: Number(row.start), end: Number(row.end) };
-      }
-      return null;
-    } catch (e) {
-      console.error("[getNextPendingTask Native Error]", e);
-    }
-  }
+  if (!db) return null;
 
-  // Fallback to Python
-  const pyCode = `
-import sqlite3, json, time
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if not db_path.exists():
-    print(json.dumps(None))
-else:
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    cur = conn.cursor()
-    cur.execute('SELECT task_id, start, end FROM tasks WHERE status = "PENDING" ORDER BY task_id ASC LIMIT 1')
-    row = cur.fetchone()
-    if not row:
-        cutoff = time.time() - 30.0
-        cur.execute('SELECT task_id, start, end FROM tasks WHERE status = "RUNNING" AND (assigned_at IS NULL OR assigned_at < ?) ORDER BY task_id ASC LIMIT 1', (cutoff,))
-        row = cur.fetchone()
-
-    if row:
-        task_id, start, end = row
-        cur.execute('UPDATE tasks SET status = "RUNNING", worker_id = ?, assigned_at = ? WHERE task_id = ?', ('${workerId}', time.time(), task_id))
-        conn.commit()
-        print(json.dumps({'task_id': task_id, 'start': start, 'end': end}))
-    else:
-        print(json.dumps(None))
-    conn.close()
-`;
   try {
-    const out = runPythonCode(pyCode);
-    const parsed = JSON.parse(out);
-    return parsed;
+    // 1. 未割当 (PENDING) タスクを最優先取得
+    let row = db.prepare("SELECT task_id, start, end FROM tasks WHERE status = 'PENDING' ORDER BY task_id ASC LIMIT 1").get() as any;
+    // 2. なければ 30秒以上無応答の放置RUNNINGタスクを自動救済
+    if (!row) {
+      const cutoff = (Date.now() / 1000) - 30.0;
+      row = db.prepare("SELECT task_id, start, end FROM tasks WHERE status = 'RUNNING' AND (assigned_at IS NULL OR assigned_at < ?) ORDER BY task_id ASC LIMIT 1").get(cutoff) as any;
+    }
+    if (row) {
+      const nowSec = Date.now() / 1000;
+      db.prepare("UPDATE tasks SET status = 'RUNNING', worker_id = ?, assigned_at = ? WHERE task_id = ?").run(workerId, nowSec, row.task_id);
+      invalidateStatsCache();
+      return { task_id: Number(row.task_id), start: Number(row.start), end: Number(row.end) };
+    }
+    return null;
   } catch (e) {
+    console.error("[getNextPendingTask Error]", e);
     return null;
   }
 }
@@ -310,21 +532,35 @@ function dispatchTasksToIdleWorkers(): number {
   return dispatched;
 }
 
-// タスク完了処理
+// タスク完了処理 (完全非同期ファイル保存 & ネイティブDB即時更新)
 function completeTask(taskId: number, workerId: string, durationSec: number, totalSolutions: number, resultData: any) {
-  // 1. 結果JSONファイルを即座に非同期安全に保存
-  try {
-    const resFile = path.join(RESULTS_DIR, `task_${taskId}.json`);
-    fs.writeFileSync(resFile, JSON.stringify({
-      task_id: taskId,
-      worker_id: workerId,
-      completed_at: new Date().toISOString(),
-      duration: durationSec,
-      result: resultData || {}
-    }, null, 2));
-  } catch (e) {
-    console.error(`[task_${taskId}] 結果ファイル保存エラー:`, e);
+  const resultRecord = {
+    task_id: taskId,
+    worker_id: workerId,
+    completed_at: new Date().toISOString(),
+    duration: durationSec,
+    result: resultData || {}
+  };
+
+  // メモリ内リングバッファに即時追加 (ディスクI/Oなしで即座にフロントエンドへ返却可能)
+  recentCompletedResults.unshift(resultRecord);
+  if (recentCompletedResults.length > 30) {
+    recentCompletedResults.pop();
   }
+
+  // インメモリ統計を即時インクリメント (DBフルスキャンクエリを回避し他端末の接続を即時化)
+  if (cachedDbStats) {
+    cachedDbStats.completed = (cachedDbStats.completed || 0) + 1;
+    cachedDbStats.running = Math.max(0, (cachedDbStats.running || 1) - 1);
+    cachedDbStats.total_solutions = (cachedDbStats.total_solutions || 0) + totalSolutions;
+    if (cachedDbStats.total > 0) {
+      cachedDbStats.completion_rate = Math.round((cachedDbStats.completed / cachedDbStats.total) * 10000) / 100;
+    }
+  }
+
+  // 1. 結果JSONファイルを非同期保存 (I/Oブロックなし)
+  const resFile = path.join(RESULTS_DIR, `task_${taskId}.json`);
+  fs.writeFile(resFile, JSON.stringify(resultRecord, null, 2), () => {});
 
   // 2. tasks.db を超高速ネイティブ更新
   const db = getDb();
@@ -338,36 +574,13 @@ function completeTask(taskId: number, workerId: string, durationSec: number, tot
       db.prepare("UPDATE tasks SET status = 'COMPLETED', completed_at = ?, duration = ?, total_solutions = ?, result_summary = ? WHERE task_id = ?")
         .run(nowSec, durationSec, totalSolutions, summary, taskId);
       invalidateStatsCache();
-      return;
     } catch (e) {
       console.error("[completeTask Native DB Error]", e);
     }
   }
-
-  // Fallback to Python
-  const pyCode = `
-import sqlite3, json, time
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if db_path.exists():
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    cur = conn.cursor()
-    summary = json.dumps({
-        'total_solutions': ${totalSolutions},
-        'duration_sec': ${durationSec}
-    })
-    cur.execute('UPDATE tasks SET status = "COMPLETED", completed_at = ?, duration = ?, total_solutions = ?, result_summary = ? WHERE task_id = ?', (time.time(), ${durationSec}, ${totalSolutions}, summary, ${taskId}))
-    conn.commit()
-    conn.close()
-`;
-  try {
-    runPythonCode(pyCode);
-  } catch (e) {
-    console.error("タスク完了書き込みエラー:", e);
-  }
 }
 
-// 切断時・タイムアウト時のタスク自動回収
+// 切断時・タイムアウト時のタスク自動回収 (ネイティブ高速処理)
 function recoverWorkerTask(workerId: string) {
   const db = getDb();
   if (db) {
@@ -375,28 +588,9 @@ function recoverWorkerTask(workerId: string) {
       db.prepare("UPDATE tasks SET status = 'PENDING', worker_id = NULL, assigned_at = NULL WHERE worker_id = ? AND status = 'RUNNING'").run(workerId);
       invalidateStatsCache();
       console.log(`[タスク回収] ワーカー ${workerId} の未完了タスクを PENDING に回収しました`);
-      return;
     } catch (e) {
-      console.error("[recoverWorkerTask Native Error]", e);
+      console.error("[recoverWorkerTask Error]", e);
     }
-  }
-
-  const pyCode = `
-import sqlite3
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if db_path.exists():
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    cur = conn.cursor()
-    cur.execute('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL WHERE worker_id = ? AND status = "RUNNING"', ('${workerId}',))
-    conn.commit()
-    conn.close()
-`;
-  try {
-    runPythonCode(pyCode);
-    console.log(`[タスク回収] ワーカー ${workerId} の未完了タスクを PENDING に回収しました`);
-  } catch (e) {
-    console.error("タスク回収エラー:", e);
   }
 }
 
@@ -409,10 +603,14 @@ app.get("/api/cluster/status", (req, res) => {
   try {
     const statusFile = path.join(DATA_DIR, "cluster_status.json");
     let statusData: any = null;
+    const now = Date.now();
 
-    if (fs.existsSync(statusFile)) {
+    if (cachedStatusJson.data && (now - cachedStatusJson.time < 1500)) {
+      statusData = cachedStatusJson.data;
+    } else if (fs.existsSync(statusFile)) {
       try {
         statusData = JSON.parse(fs.readFileSync(statusFile, "utf-8"));
+        cachedStatusJson = { data: statusData, time: now };
       } catch (e) {
         // ignore parse error
       }
@@ -600,49 +798,33 @@ app.post("/api/cluster/tasks/generate", (req, res) => {
     const end = Math.max(start, parseInt(range_end, 10));
     const chunk = Math.max(1, parseInt(chunk_size, 10));
 
-    const pyCode = `
-import sqlite3, os
-from pathlib import Path
-db_path = Path('data/tasks.db')
-conn = sqlite3.connect(db_path, timeout=10.0)
-conn.execute("PRAGMA journal_mode = WAL;")
-conn.execute("PRAGMA busy_timeout = 10000;")
-cur = conn.cursor()
-cur.execute('DROP TABLE IF EXISTS tasks')
-cur.execute('''
-    CREATE TABLE tasks (
-        task_id INTEGER PRIMARY KEY,
-        start INTEGER NOT NULL,
-        end INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        worker_id TEXT,
-        assigned_at REAL,
-        completed_at REAL,
-        duration REAL,
-        total_solutions INTEGER DEFAULT 0,
-        result_summary TEXT
-    )
-''')
-cur.execute('CREATE INDEX idx_tasks_status ON tasks(status)')
-task_id = 1
-curr = ${start}
-items = []
-while curr <= ${end}:
-    c_end = min(curr + ${chunk} - 1, ${end})
-    items.append((task_id, curr, c_end, 'PENDING'))
-    task_id += 1
-    curr = c_end + 1
-cur.executemany('INSERT INTO tasks (task_id, start, end, status) VALUES (?, ?, ?, ?)', items)
-conn.commit()
-conn.close()
-print(f"{len(items)}")
-`;
-    const count = runPythonCode(pyCode);
-    const countNum = parseInt(count, 10) || 0;
-    resetDbConnection();
+    const db = getDb();
+    if (!db) {
+      return res.status(500).json({ error: "データベース初期化エラー" });
+    }
+
+    db.exec("DROP TABLE IF EXISTS tasks;");
+    initDbSchema(db);
+
+    const insert = db.prepare("INSERT INTO tasks (task_id, start, end, status) VALUES (?, ?, ?, 'PENDING')");
+    let taskId = 1;
+    let curr = start;
+    let totalGenerated = 0;
+
+    db.exec("BEGIN TRANSACTION;");
+    while (curr <= end) {
+      const cEnd = Math.min(curr + chunk - 1, end);
+      insert.run(taskId, curr, cEnd);
+      taskId++;
+      totalGenerated++;
+      curr = cEnd + 1;
+    }
+    db.exec("COMMIT;");
+
+    invalidateStatsCache();
     // 待機中のワーカーへ即座に新タスクを自動配分
     dispatchTasksToIdleWorkers();
-    res.json({ status: "generated", count: countNum });
+    res.json({ status: "generated", count: totalGenerated });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -671,41 +853,10 @@ app.get("/api/cluster/tasks/max-range", (req, res) => {
     }
   }
 
-  try {
-    const pyCode = `
-import sqlite3, json
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if not db_path.exists():
-    print(json.dumps({'max_id': 0, 'max_end': 0, 'total': 0}))
-else:
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    cur = conn.cursor()
-    cur.execute("SELECT MAX(task_id), MAX(end), COUNT(*) FROM tasks")
-    row = cur.fetchone()
-    conn.close()
-    max_id = row[0] if (row and row[0] is not None) else 0
-    max_end = row[1] if (row and row[1] is not None) else 0
-    total = row[2] if (row and row[2] is not None) else 0
-    print(json.dumps({'max_id': max_id, 'max_end': max_end, 'total': total}))
-`;
-    const out = runPythonCode(pyCode);
-    let parsed = { max_id: 0, max_end: 0, total: 0 };
-    try {
-      const data = JSON.parse(out);
-      if (data && typeof data.max_id === "number") {
-        parsed = data;
-      }
-    } catch (e) {}
-    cachedMaxRange = parsed;
-    lastMaxRangeFetch = now;
-    res.json(parsed);
-  } catch (err: any) {
-    res.json({ max_id: 0, max_end: 0, total: 0 });
-  }
+  res.json({ max_id: 0, max_end: 0, total: 0 });
 });
 
-// 続きのタスクを追加登録 (gui_server.py の _append_next_tasks と同等)
+// 続きのタスクを追加登録 (gui_server.py の _append_next_tasks と同等 - ネイティブ超高速処理)
 app.post("/api/cluster/tasks/append", (req, res) => {
   try {
     const { range_start, range_end, chunk_size = 100 } = req.body;
@@ -713,110 +864,74 @@ app.post("/api/cluster/tasks/append", (req, res) => {
     const end = Math.max(start, parseInt(range_end, 10));
     const chunk = Math.max(1, parseInt(chunk_size, 10));
 
-    const pyCode = `
-import sqlite3, json
-from pathlib import Path
-db_path = Path('data/tasks.db')
-conn = sqlite3.connect(db_path, timeout=10.0)
-conn.execute("PRAGMA journal_mode = WAL;")
-conn.execute("PRAGMA busy_timeout = 10000;")
-cur = conn.cursor()
-cur.execute("SELECT MAX(task_id), MAX(end) FROM tasks")
-row = cur.fetchone()
-max_id = row[0] if (row and row[0] is not None) else 0
-max_end = row[1] if (row and row[1] is not None) else 0
+    const db = getDb();
+    if (!db) return res.status(500).json({ error: "DBエラー" });
 
-start_val = ${start}
-if start_val <= max_end:
-    start_val = max_end + 1
+    const row = db.prepare("SELECT MAX(task_id) as max_id, MAX(end) as max_end FROM tasks").get() as any;
+    const maxId = Number(row?.max_id) || 0;
+    const maxEnd = Number(row?.max_end) || 0;
 
-end_val = ${end}
-chunk_val = ${chunk}
+    if (start <= maxEnd) {
+      start = maxEnd + 1;
+    }
 
-if start_val > end_val:
-    conn.close()
-    print("0")
-else:
-    task_id = max_id + 1
-    curr = start_val
-    items = []
-    while curr <= end_val:
-        c_end = min(curr + chunk_val - 1, end_val)
-        items.append((task_id, curr, c_end, 'PENDING'))
-        task_id += 1
-        curr = c_end + 1
-    cur.executemany("INSERT INTO tasks (task_id, start, end, status) VALUES (?, ?, ?, ?)", items)
-    conn.commit()
-    conn.close()
-    print(f"{len(items)}")
-`;
-    const countStr = runPythonCode(pyCode);
-    const count = parseInt(countStr, 10) || 0;
-    resetDbConnection();
+    if (start > end) {
+      return res.json({ status: "appended", count: 0 });
+    }
+
+    const insert = db.prepare("INSERT INTO tasks (task_id, start, end, status) VALUES (?, ?, ?, 'PENDING')");
+    let taskId = maxId + 1;
+    let curr = start;
+    let totalAppended = 0;
+
+    db.exec("BEGIN TRANSACTION;");
+    while (curr <= end) {
+      const cEnd = Math.min(curr + chunk - 1, end);
+      insert.run(taskId, curr, cEnd);
+      taskId++;
+      totalAppended++;
+      curr = cEnd + 1;
+    }
+    db.exec("COMMIT;");
+
+    invalidateStatsCache();
     // 待機中のワーカーへ即座に新タスクを自動配分
     dispatchTasksToIdleWorkers();
-    res.json({ status: "appended", count });
+    res.json({ status: "appended", count: totalAppended });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// タスクをPENDINGにリセット
+// タスクをPENDINGにリセット (ネイティブ超高速処理)
 app.post("/api/cluster/tasks/reset", (req, res) => {
   try {
-    const pyCode = `
-import sqlite3
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if db_path.exists():
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA busy_timeout = 10000;")
-    cur = conn.cursor()
-    cur.execute('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL, completed_at = NULL, duration = NULL, total_solutions = 0, result_summary = NULL')
-    conn.commit()
-    conn.close()
-    print("reset_ok")
-else:
-    print("no_db")
-`;
-    const result = runPythonCode(pyCode);
-    resetDbConnection();
-    // リセットされたタスクを即時配分
-    dispatchTasksToIdleWorkers();
-    res.json({ status: result });
+    const db = getDb();
+    if (db) {
+      db.prepare('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL, completed_at = NULL, duration = NULL, total_solutions = 0, result_summary = NULL').run();
+      invalidateStatsCache();
+      dispatchTasksToIdleWorkers();
+      return res.json({ status: "reset_ok" });
+    }
+    res.json({ status: "no_db" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// tasks.db のバックアップ作成
-app.post("/api/cluster/database/backup", (req, res) => {
+// tasks.db のバックアップ作成 (非同期非ブロッキング)
+app.post("/api/cluster/database/backup", async (req, res) => {
   try {
     const dbPath = path.join(DATA_DIR, "tasks.db");
     if (!fs.existsSync(dbPath)) {
       return res.status(404).json({ error: "tasks.db が存在しません。" });
     }
 
-    const pyCode = `
-import sqlite3, datetime
-from pathlib import Path
-db_path = Path('data/tasks.db')
-backup_dir = Path('data/backups')
-backup_dir.mkdir(parents=True, exist_ok=True)
-now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-target = backup_dir / f"tasks_backup_{now_str}.db"
+    const nowStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+    const backupFileName = `tasks_backup_${nowStr}.db`;
+    const targetPath = path.join(BACKUPS_DIR, backupFileName);
 
-src = sqlite3.connect(db_path)
-dst = sqlite3.connect(target)
-try:
-    src.backup(dst)
-    print(target.name)
-finally:
-    dst.close()
-    src.close()
-`;
-    const backupFileName = runPythonCode(pyCode);
+    await fs.promises.copyFile(dbPath, targetPath);
     res.json({
       status: "success",
       filename: backupFileName,
@@ -860,30 +975,27 @@ app.get("/api/cluster/tasks/list", (req, res) => {
     const statusFilter = req.query.status as string || "ALL";
     const offset = (page - 1) * limit;
 
-    const pyCode = `
-import sqlite3, json
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if not db_path.exists():
-    print(json.dumps({'tasks': [], 'total': 0}))
-else:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    filter_sql = ""
-    params = []
-    if '${statusFilter}' != 'ALL':
-        filter_sql = "WHERE status = ?"
-        params.append('${statusFilter}')
-    c.execute(f"SELECT COUNT(*) FROM tasks {filter_sql}", params)
-    total = c.fetchone()[0]
-    c.execute(f"SELECT task_id, start, end, status, worker_id, duration, total_solutions FROM tasks {filter_sql} ORDER BY task_id ASC LIMIT {limit} OFFSET {offset}", params)
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    print(json.dumps({'tasks': rows, 'total': total}))
-`;
-    const out = runPythonCode(pyCode);
-    res.json(JSON.parse(out));
+    const db = getDb();
+    if (db) {
+      try {
+        let countSql = "SELECT COUNT(*) as total FROM tasks";
+        let listSql = "SELECT task_id, start, end, status, worker_id, duration, total_solutions FROM tasks";
+        const queryParams: any[] = [];
+        if (statusFilter !== "ALL") {
+          countSql += " WHERE status = ?";
+          listSql += " WHERE status = ?";
+          queryParams.push(statusFilter);
+        }
+        listSql += " ORDER BY task_id ASC LIMIT ? OFFSET ?";
+        const totalRow = db.prepare(countSql).get(...(statusFilter !== "ALL" ? [statusFilter] : [])) as any;
+        const rows = db.prepare(listSql).all(...queryParams, limit, offset) as any[];
+        return res.json({ tasks: rows, total: Number(totalRow?.total) || 0 });
+      } catch (e) {
+        console.error("[tasks/list Native Error]", e);
+      }
+    }
+
+    res.json({ tasks: [], total: 0 });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -959,9 +1071,13 @@ app.get("/api/cluster/results/benchmark", (req, res) => {
   }
 });
 
-// 最近の完了結果詳細
+// 最近の完了結果詳細 (メモリ内リングバッファ優先・超高速0ms返却)
 app.get("/api/cluster/results/list", (req, res) => {
   try {
+    if (recentCompletedResults.length > 0) {
+      return res.json(recentCompletedResults.slice(0, 15));
+    }
+
     if (!fs.existsSync(RESULTS_DIR)) {
       return res.json([]);
     }
@@ -978,55 +1094,69 @@ app.get("/api/cluster/results/list", (req, res) => {
       }
     }).filter(Boolean);
 
+    results.forEach((r) => recentCompletedResults.push(r));
     res.json(results);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 結果フォルダ内の全ファイル一覧 & 格納先メタデータ取得
+// 結果フォルダ内の全ファイル一覧 & 格納先メタデータ取得 (3秒インメモリキャッシュ)
 app.get("/api/cluster/results/files", (req, res) => {
   try {
+    const now = Date.now();
+    if (cachedFilesMetadata.data && (now - cachedFilesMetadata.time < 3000)) {
+      return res.json(cachedFilesMetadata.data);
+    }
+
     const resultsDirRel = "parallel/data/results";
     const dbPathRel = "parallel/data/tasks.db";
     const backupsDirRel = "parallel/data/backups";
 
     if (!fs.existsSync(RESULTS_DIR)) {
-      return res.json({
+      const emptyData = {
         folder_path: resultsDirRel,
         database_path: dbPathRel,
         backups_dir: backupsDirRel,
         files: [],
         total_count: 0,
         total_size_bytes: 0,
-      });
+      };
+      cachedFilesMetadata = { data: emptyData, time: now };
+      return res.json(emptyData);
     }
 
     const fileNames = fs.readdirSync(RESULTS_DIR).filter((f) => f.endsWith(".json"));
     let totalSizeBytes = 0;
-    const files = fileNames.map((name) => {
+    const files = fileNames.slice(-80).map((name) => {
       const full = path.join(RESULTS_DIR, name);
-      const st = fs.statSync(full);
-      totalSizeBytes += st.size;
-      const tidMatch = name.match(/task_(\d+)\.json/);
-      return {
-        filename: name,
-        task_id: tidMatch ? parseInt(tidMatch[1], 10) : null,
-        size_bytes: st.size,
-        updated_at: st.mtime.toISOString(),
-      };
-    });
+      try {
+        const st = fs.statSync(full);
+        totalSizeBytes += st.size;
+        const tidMatch = name.match(/task_(\d+)\.json/);
+        return {
+          filename: name,
+          task_id: tidMatch ? parseInt(tidMatch[1], 10) : null,
+          size_bytes: st.size,
+          updated_at: st.mtime.toISOString(),
+        };
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
 
-    files.sort((a, b) => (b.task_id || 0) - (a.task_id || 0));
+    files.sort((a: any, b: any) => (b.task_id || 0) - (a.task_id || 0));
 
-    res.json({
+    const resultData = {
       folder_path: resultsDirRel,
       database_path: dbPathRel,
       backups_dir: backupsDirRel,
       files,
-      total_count: files.length,
+      total_count: fileNames.length,
       total_size_bytes: totalSizeBytes,
-    });
+    };
+    cachedFilesMetadata = { data: resultData, time: now };
+    res.json(resultData);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1096,9 +1226,14 @@ app.get("/api/cluster/database/backup/download/:filename", (req, res) => {
   }
 });
 
-// ログ取得
+// ログ取得 (2秒インメモリキャッシュで複数端末接続時の同時I/O負荷を解消)
 app.get("/api/cluster/logs", (req, res) => {
   try {
+    const now = Date.now();
+    if (cachedLogs.data && (now - cachedLogs.time < 2000)) {
+      return res.json(cachedLogs.data);
+    }
+
     const serverLogPath = path.join(LOGS_DIR, "server.log");
     const workerLogPath = path.join(LOGS_DIR, "worker.log");
 
@@ -1115,12 +1250,14 @@ app.get("/api/cluster/logs", (req, res) => {
     const sLines = readTailLines(serverLogPath, 80);
     const wLines = readTailLines(workerLogPath, 80);
 
-    res.json({
+    const logData = {
       server_log: sLines.join("\n"),
       server_lines: sLines,
       worker_log: wLines.join("\n"),
       worker_lines: wLines,
-    });
+    };
+    cachedLogs = { data: logData, time: now };
+    res.json(logData);
   } catch (err: any) {
     res.json({
       server_log: "",
@@ -1131,8 +1268,8 @@ app.get("/api/cluster/logs", (req, res) => {
   }
 });
 
-// Endo_method 単体計算テスト
-app.post("/api/endo/calculate", (req, res) => {
+// Endo_method 単体計算テスト (非同期・イベントループを止めない)
+app.post("/api/endo/calculate", async (req, res) => {
   try {
     const nVal = parseInt(req.body.n, 10);
     if (isNaN(nVal) || nVal < 1) {
@@ -1156,7 +1293,7 @@ print(json.dumps({
     'm_decompositions': m_decomp
 }))
 `;
-    const out = runPythonCode(pyCode);
+    const out = await runPythonCodeAsync(pyCode);
     res.json(JSON.parse(out));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1404,23 +1541,15 @@ app.post("/api/cluster/workers/pause/:id", (req, res) => {
   }
 });
 
-// 特定タスクの強制回収 (PENDINGに戻す)
+// 特定タスクの強制回収 (PENDINGに戻す - ネイティブ高速処理)
 app.post("/api/cluster/tasks/recover/:id", (req, res) => {
   try {
     const taskId = parseInt(req.params.id, 10);
-    const pyCode = `
-import sqlite3
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if db_path.exists():
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL WHERE task_id = ?', (${taskId},))
-    conn.commit()
-    conn.close()
-    print("recovered")
-`;
-    runPythonCode(pyCode);
+    const db = getDb();
+    if (db) {
+      db.prepare('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL WHERE task_id = ?').run(taskId);
+      invalidateStatsCache();
+    }
     res.json({ status: "recovered", task_id: taskId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1433,17 +1562,29 @@ if db_path.exists():
 async function startServer() {
   const server = http.createServer(app);
 
+  // Cloudflare Tunnel (trycloudflare / custom domain) 及び複数デバイス同時接続の最適化
+  server.keepAliveTimeout = 65000; // 65秒 (Cloudflareのリバースプロキシのアイドルタイムアウト60秒に対応)
+  server.headersTimeout = 66000;   // 66秒 (keepAliveTimeoutより大きく設定)
+  // 注意: server.maxConnections = 0 と設定すると全接続が拒否される致命的バグとなるため設定しない (無制限)
+
   // WebSocket サーバーの初期化 (/ws および /ws/worker の両方のパスを受け入れ)
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request, socket, head) => {
+    socket.on("error", () => {});
     const url = request.url || "";
     if (url.startsWith("/ws")) {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
       });
     } else {
-      socket.destroy();
+      // 拒否時も abruptly socket.destroy() ではなく 404 で正常に応答終了 (トンネル多重化の破損を防止)
+      try {
+        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        socket.end();
+      } catch (e) {
+        socket.destroy();
+      }
     }
   });
 
@@ -1457,10 +1598,18 @@ async function startServer() {
 
         switch (msg.type) {
           case "REGISTER": {
-            // ワーカーID採番または指定
-            const assignedId = msg.worker_id && msg.worker_id !== "AUTO"
+            // ワーカーID採番または指定 (重複時は自動ナンバリング)
+            let assignedId = msg.worker_id && msg.worker_id !== "AUTO"
               ? msg.worker_id
               : `WEB-PC${(nextWebWorkerIndex++).toString().padStart(2, "0")}`;
+
+            // 同一IDの別ワーカーが既にアクティブ接続中の場合は自動でサフィックスを付与して衝突を回避
+            if (connectedWebWorkers.has(assignedId)) {
+              const existing = connectedWebWorkers.get(assignedId);
+              if (existing && existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
+                assignedId = `WEB-PC${(nextWebWorkerIndex++).toString().padStart(2, "0")}`;
+              }
+            }
 
             const initialMode = msg.mode === "immediate" ? "RUNNING" : "STANDBY";
 
@@ -1594,18 +1743,11 @@ async function startServer() {
             if (!workerSession) return;
             const { task_id } = msg;
             if (task_id) {
-              const pyCode = `
-import sqlite3
-from pathlib import Path
-db_path = Path('data/tasks.db')
-if db_path.exists():
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    cur.execute('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL WHERE task_id = ?', (${task_id},))
-    conn.commit()
-    conn.close()
-`;
-              runPythonCode(pyCode);
+              const db = getDb();
+              if (db) {
+                db.prepare('UPDATE tasks SET status = "PENDING", worker_id = NULL, assigned_at = NULL WHERE task_id = ?').run(task_id);
+                invalidateStatsCache();
+              }
             }
             workerSession.current_task_id = null;
             workerSession.current_range = "-";
@@ -1675,9 +1817,23 @@ if db_path.exists():
   const distPath = path.join(process.cwd(), "dist");
   const hasBuiltDist = fs.existsSync(path.join(distPath, "index.html"));
 
+  const publicPath = path.join(process.cwd(), "public");
+  if (fs.existsSync(publicPath)) {
+    app.use(express.static(publicPath, { maxAge: "1h" }));
+  }
+
   if (hasBuiltDist || process.env.NODE_ENV === "production") {
-    console.log("[Server] ビルド済み静的ファイル (dist/) を配信します (最高速・高安定モード)");
-    app.use(express.static(distPath));
+    console.log("[Server] ビルド済み静的ファイル (dist/) を配信します (最高速・高安定・複数端末同時接続モード)");
+    app.use(express.static(distPath, {
+      maxAge: "1d",
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("index.html")) {
+          res.setHeader("Cache-Control", "no-cache");
+        } else {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      }
+    }));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });

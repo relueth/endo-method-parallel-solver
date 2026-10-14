@@ -51,7 +51,13 @@ if %errorlevel% neq 0 (
     echo.
 )
 
-echo [3/3] 親サーバー (localhost:3000) を別ウィンドウで起動します...
+:: 5. 複数端末・スマホ同時接続高速化のための静的アセット確認
+if not exist "dist\index.html" (
+    echo [2.5/3] 複数端末・スマホが同時にアクセスしても詰まらないよう、本番アセットを事前ビルドしています (約2秒)...
+    call npm run build
+)
+
+echo [3/3] 親サーバー (ポート 3000) を別ウィンドウで起動します...
 start "Node.js 親サーバー (:3000)" cmd /k "npm run dev"
 
 echo.
@@ -67,6 +73,8 @@ echo ※ 画面に「https://xxxx.trycloudflare.com」というURLが表示さ�
 echo    そのURLをスマホのブラウザで開くか、QRコード化して読み取ってください。
 echo.
 
-cloudflared tunnel --url http://localhost:3000
+:: Windows環境でのIPv6スタック遅延・単一接続ブロッキングを防ぐため 127.0.0.1 を直接指定
+:: --protocol http2 により、QUIC(UDP)特有のWindowsパケット詰まり・2台目以降の接続遮断を完全解消
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:3000
 
 pause

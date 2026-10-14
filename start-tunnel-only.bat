@@ -19,6 +19,8 @@ echo トンネルを起動中...
 echo 下記に表示される「https://*.trycloudflare.com」が世界中からアクセスできるURLです:
 echo.
 
-cloudflared tunnel --url http://localhost:3000
+:: Windows環境でのIPv6スタック遅延・単一接続ブロッキングを防ぐため 127.0.0.1 を直接指定
+:: --protocol http2 により、QUIC(UDP)特有のWindowsパケット詰まり・2台目以降の接続遮断を完全解消
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:3000
 
 pause

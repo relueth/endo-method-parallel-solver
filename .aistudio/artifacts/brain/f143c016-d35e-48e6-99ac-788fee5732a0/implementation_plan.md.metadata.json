@@ -1,6 +1,6 @@
 {
-  "summary":  "Windows PCを親サーバーとして起動し、Cloudflare Tunnelを用いて世界中（外部インターネット）から安全かつポート開放不要でアクセス可能にするための完全構築手順、自動起動スクリプト、およびWebコンソール内の専用ガイド機能の実装計画です。",
-  "updatedAt":  "2026-10-03T03:26:22.746573034Z",
+  "summary":  "Cloudflare Tunnelを独自ドメインで運用するための設計計画書です。ドメイン取得からCloudflare Zero TrustでのNamed Tunnel作成、トークン式起動バッチ(start-custom-tunnel.bat)、GUI上の対話式セットアップガイドの実装計画を定義しています。",
+  "updatedAt":  "2026-10-04T08:44:23.450676652Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

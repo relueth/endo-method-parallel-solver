@@ -515,7 +515,6 @@ self.onmessage = async (e) => {
 
   if (action === "INIT") {
     postMessage({ type: "READY", engine: "Endo JS Math Engine (Turbo)" });
-    initPyodide().catch(() => {});
   } else if (action === "CALCULATE" || action === "START_TASK" || action === "START") {
     await runTask(data.task_id, data.start, data.end);
   } else if (action === "STOP" || action === "PAUSE") {

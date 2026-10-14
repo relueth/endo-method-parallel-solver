@@ -231,18 +231,24 @@ export function ShareDeviceModal({ isOpen, onClose }: ShareDeviceModalProps) {
                   自前Windows PCで Cloudflare Tunnel を起動した場合
                 </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  Windows PCで <code className="bg-slate-900 px-1 py-0.5 rounded text-cyan-300">cloudflared tunnel --url http://localhost:3000</code> を実行した際に発行されたURL（例: <code className="text-amber-300">https://xxxx.trycloudflare.com</code>）をここに入力すると、スマホで読み取れるQRコードが自動生成されます。
+                  一時URL（<code>https://xxxx.trycloudflare.com</code>）または設定した固定独自ドメイン（例: <code>https://cluster.yourdomain.com</code>）を入力すると、他端末からアクセスするためのQRコードと接続URLが自動生成されます。
                 </p>
+                <div className="pt-1 text-[11px] text-cyan-300/90 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                  <span>
+                    💡 毎回URLが変わるのを防ぎたい場合は、親サーバー画面の「🌐 独自ドメイン固定設定」より固定ドメイン設定を行えます。
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-slate-300 block">
-                  発行された Cloudflare Tunnel のURLを入力:
+                  Cloudflare Tunnel のURL (一時URL または 独自ドメイン):
                 </label>
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    placeholder="https://random-subdomain.trycloudflare.com"
+                    placeholder="https://cluster.yourdomain.com または https://xxxx.trycloudflare.com"
                     value={customTunnelUrl}
                     onChange={(e) => setCustomTunnelUrl(e.target.value)}
                     className="flex-1 bg-slate-950 border border-slate-700 focus:border-cyan-400 px-3 py-2 rounded-lg text-xs font-mono text-cyan-300 outline-none"
@@ -250,7 +256,7 @@ export function ShareDeviceModal({ isOpen, onClose }: ShareDeviceModalProps) {
                   {customTunnelUrl && (
                     <button
                       onClick={() => setCustomTunnelUrl("")}
-                      className="px-2 py-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg"
+                      className="px-2 py-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg cursor-pointer"
                     >
                       クリア
                     </button>
